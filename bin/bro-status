@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Set bro bar state. Usage: bro-status working|speaking|listening|ready|starting
+set -euo pipefail
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+WORD="$BRO_HOME/status-word"
+LINE="$BRO_HOME/status-line"
+OWNER="$BRO_HOME/status-owner"
+word="${1:-ready}"
+echo "$word" >"$WORD"
+if [[ "${2:-}" == "--hint" ]]; then
+  echo hint >"$OWNER"
+else
+  echo backend >"$OWNER"
+fi
+# Instant paint (loop refreshes animation)
+"$BRO_HOME/bin/bro-status-paint" 2>/dev/null || true

@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Write clean content for the user overlay and optionally pop it up.
+# Usage:
+#   bro-show "title" <<'EOF'
+#   content here
+#   EOF
+#   bro-show --file path.md
+#   bro-show --open     # just open whatever is current
+#   bro-show --clear
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+SHOW_DIR="$BRO_HOME/show"
+CURRENT="$SHOW_DIR/current.md"
+SOCKET="${BRO_TMUX_SOCKET:-bro}"
+SESSION="${BRO_SESSION:-bro}"
+mkdir -p "$SHOW_DIR"
+
+open_overlay() {
+  # Clean viewer: only the board, no chat chrome. q or Esc to close (less: q).
+  if ! tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+    echo "bro session not running" >&2
+    return 1
+  fi
+  # Fire-and-forget so callers are not stuck until the user closes the popup.
+  # nvim so j/k are line-by-line; q quits and closes the overlay.
+  tmux -L "$SOCKET" display-popup -t "$SESSION:you" -E -w 90% -h 80% -T " bro " \
+    "nvim -R -c 'nnoremap <silent> q :qa!<CR>' -- '$CURRENT' || less -R -- '$CURRENT' || more '$CURRENT'; true" &
+}
+
+case "${1:-}" in
+  --open|open)
+    open_overlay
+    exit 0
+    ;;
+  --toggle|toggle)
+    width="$(tmux -L "$SOCKET" display-message -p '#{popup_width}' 2>/dev/null || true)"
+    if [[ -n "${width:-}" ]]; then
+      tmux -L "$SOCKET" display-popup -C
+    else
+      open_overlay
+    fi
+    exit 0
+    ;;
+  --close|close)
+    tmux -L "$SOCKET" display-popup -C 2>/dev/null || true
+    exit 0
+    ;;
+  --clear|clear)
+    cat >"$CURRENT" <<'EOF'
+(nothing to show)
+EOF
+    echo "cleared"
+    exit 0
+    ;;
+  --file)
+    cp "$2" "$CURRENT"
+    open_overlay
+    exit 0
+    ;;
+  --write-only)
+    # stdin → current, do not open
+    title="${2:-note}"
+    {
+      echo "# $title"
+      echo ""
+      cat
+    } >"$CURRENT"
+    exit 0
+    ;;
+  "")
+    echo "usage: bro-show TITLE  (then content on stdin)" >&2
+    echo "       bro-show --open | --clear | --file PATH" >&2
+    exit 2
+    ;;
+  *)
+    title="$1"
+    {
+      echo "# $title"
+      echo ""
+      cat
+    } >"$CURRENT"
+    open_overlay
+    ;;
+esac

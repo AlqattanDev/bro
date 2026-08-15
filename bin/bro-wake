@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOCKET="${BRO_TMUX_SOCKET:-bro}"
+SESSION="${BRO_SESSION:-bro}"
+reason="${1:-event}"
+
+if ! tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+  exit 0
+fi
+
+message="[bro $reason queued — run: bro-inbox claim]"
+tmux -L "$SOCKET" send-keys -t "$SESSION:me" -l -- "$message" 2>/dev/null || exit 0
+tmux -L "$SOCKET" send-keys -t "$SESSION:me" Enter 2>/dev/null || true

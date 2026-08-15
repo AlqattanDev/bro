@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Type a command into the user's work pane (as if they typed it).
+# Usage:
+#   bro-run 'tailscale status'
+#   bro-run --no-enter 'echo hello'   # type only, user presses Enter
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+SOCKET="${BRO_TMUX_SOCKET:-bro}"
+SESSION="${BRO_SESSION:-bro}"
+TARGET="${SESSION}:you"
+
+ENTER=1
+if [[ "${1:-}" == "--no-enter" ]]; then
+  ENTER=0
+  shift
+fi
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: bro-run [-no-enter] 'command'" >&2
+  exit 2
+fi
+
+cmd="$*"
+
+if ! tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+  echo "bro session not running (start with: bro)" >&2
+  exit 1
+fi
+
+pane_command="$(tmux -L "$SOCKET" display-message -p -t "$TARGET" '#{pane_current_command}' 2>/dev/null || true)"
+case "$pane_command" in
+  bash|dash|fish|ksh|sh|zsh) ;;
+  *)
+    echo "bro-run refused: work pane is running ${pane_command:-an unknown program}, not an idle shell" >&2
+    exit 1
+    ;;
+esac
+
+last_line="$(tmux -L "$SOCKET" capture-pane -t "$TARGET" -p -S -1 2>/dev/null | tail -n 1)"
+if [[ ! "$last_line" =~ [\$%#\>❯][[:space:]]*$ ]]; then
+  echo "bro-run refused: work pane does not show an idle shell prompt" >&2
+  exit 1
+fi
+
+# Literal keys so special chars in the command are fine
+tmux -L "$SOCKET" send-keys -t "$TARGET" -l -- "$cmd"
+if [[ "$ENTER" -eq 1 ]]; then
+  tmux -L "$SOCKET" send-keys -t "$TARGET" Enter
+fi
+
+# Log for bro
+mkdir -p "$BRO_HOME/logs"
+echo "$(date '+%H:%M:%S') RUN: $cmd" >>"$BRO_HOME/logs/run.log"

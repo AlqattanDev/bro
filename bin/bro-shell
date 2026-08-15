@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Hidden backend agent. User should not need this window.
+# Backend: BRO_BACKEND=grok|claude|codex  (default: grok)
+# Or: bro --backend claude
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+export BRO_HOME
+export PATH="$HOME/.grok/bin:/opt/homebrew/bin:$HOME/.local/bin:$BRO_HOME/bin:$PATH"
+cd "${BRO_START_DIR:-$HOME}"
+
+BACKEND="${BRO_BACKEND:-grok}"
+# Allow file override: ~/.bro/backend (one word)
+if [[ -f "$BRO_HOME/backend" ]]; then
+  BACKEND="$(tr -d '[:space:]' <"$BRO_HOME/backend")"
+fi
+
+PROMPT_FILE="$BRO_HOME/bro-boot-prompt.txt"
+cat >"$PROMPT_FILE" <<'EOF'
+You are the terminal bro backend. The user does NOT want to look at this chat UI.
+
+How the product works:
+- User works full screen in the "you" window.
+- You watch ~/.bro/watch/latest.md and status.env (errors, commands, cwd).
+- Voice (Vox) is how you talk with the user when available.
+- TWO OUTPUT CHANNELS:
+  1) TERMINAL ACTIONS — run / list / check something:
+       bro-run 'the command here'
+     Types into THEIR work pane and presses Enter.
+  2) EXPLAIN / PLAN / TEACH:
+       bro-show "Title" <<'EOF'
+       clean content only
+       EOF
+     Overlay board (F1). Not a chat dump. Next show replaces the old one.
+- Co-pilot, not main coder.
+- Talk modes (file ~/.bro/mode): call = voice keep-going; ping = one voice reply then silent; quiet = no TTS, answers on F1 only.
+- Inbox is a durable queue. A wake message appears in this terminal when a note arrives.
+- On every wake, run `bro-inbox claim`. Read the returned file, act on it, then run `bro-inbox done ID` using its id field. Repeat claim until the queue is empty.
+- Switch if they say call / ping / quiet, or if a claimed note has kind=mode.
+- F4 opens the Vox mic immediately (do not listen again). A claimed kind=talk note means capture is already underway. voice_session(status); if undelivered_heard.present, claim it and act. If the mic is still open, wait — never start a second listen.
+- Call `bro-status working` before acting on a request and `bro-status ready` as soon as you are idle again. Vox itself owns listening/speaking status.
+
+On start: short voice greet if Vox works — bro ready, talk anytime, F1 board, F2 work. Then call `bro-status ready`. Do not tell them to open this chat.
+EOF
+
+mkdir -p "$BRO_HOME/logs"
+echo "[bro-backend $(date +%H:%M:%S)] backend=$BACKEND" >>"$BRO_HOME/logs/backend.log"
+"$BRO_HOME/bin/bro-status" starting 2>/dev/null || true
+
+boot_msg="$(cat "$PROMPT_FILE")"
+
+case "$BACKEND" in
+  grok)
+    if ! command -v grok >/dev/null 2>&1; then
+      echo "grok not found" >>"$BRO_HOME/logs/backend.log"
+      exec sleep infinity
+    fi
+    exec grok --always-approve --cwd "${BRO_START_DIR:-$HOME}" "$boot_msg"
+    ;;
+  claude)
+    # Prefer real binary over alias that may inject flags oddly in non-interactive
+    CLAUDE_BIN="$(command -v claude)"
+    if [[ -z "$CLAUDE_BIN" ]]; then
+      echo "claude not found" >>"$BRO_HOME/logs/backend.log"
+      exec sleep infinity
+    fi
+    # Claude Code: pass initial prompt as args
+    exec claude --dangerously-skip-permissions "$boot_msg"
+    ;;
+  codex)
+    if ! command -v codex >/dev/null 2>&1; then
+      echo "codex not found" >>"$BRO_HOME/logs/backend.log"
+      exec sleep infinity
+    fi
+    exec codex "$boot_msg"
+    ;;
+  *)
+    echo "unknown BRO_BACKEND=$BACKEND (use grok|claude|codex)" >>"$BRO_HOME/logs/backend.log"
+    exec sleep infinity
+    ;;
+esac

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+QUEUE="$BRO_HOME/inbox"
+PENDING="$QUEUE/pending"
+CLAIMED="$QUEUE/claimed"
+DONE="$QUEUE/done"
+LOCK="$QUEUE/.claim-lock"
+mkdir -p "$PENDING" "$CLAIMED" "$DONE"
+
+rewrite_state() {
+  local source="$1" target="$2" state="$3" tmp
+  tmp="$target.tmp.$$.$RANDOM"
+  awk -v state="$state" '
+    /^state=/ { print "state=" state; found=1; next }
+    { print }
+    END { if (!found) print "state=" state }
+  ' "$source" >"$tmp"
+  mv "$tmp" "$target"
+  [[ "$source" == "$target" ]] || rm -f "$source"
+}
+
+case "${1:-}" in
+  enqueue)
+    kind="${2:-ask}"
+    cwd="${3:-unknown}"
+    stamp="$(date '+%Y%m%dT%H%M%S')"
+    id="$stamp-$$-$RANDOM"
+    while [[ -e "$PENDING/$id.md" ]]; do id="$stamp-$$-$RANDOM"; done
+    tmp="$PENDING/.$id.tmp"
+    {
+      echo "id=$id"
+      echo "state=pending"
+      echo "time=$(date '+%Y-%m-%dT%H:%M:%S%z')"
+      echo "cwd=$cwd"
+      echo "kind=$kind"
+      echo ""
+      cat
+    } >"$tmp"
+    mv "$tmp" "$PENDING/$id.md"
+    "$BRO_HOME/bin/bro-wake" "$kind" 2>/dev/null || true
+    echo "$id"
+    ;;
+  claim)
+    if ! mkdir "$LOCK" 2>/dev/null; then
+      echo "inbox is being claimed" >&2
+      exit 1
+    fi
+    trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+    source="$(find "$PENDING" -type f -name '*.md' | sort | head -1)"
+    [[ -n "$source" ]] || exit 1
+    id="$(sed -n 's/^id=//p' "$source")"
+    target="$CLAIMED/$id.md"
+    rewrite_state "$source" "$target" claimed
+    echo "$target"
+    ;;
+  done)
+    id="${2:-}"
+    [[ -n "$id" ]] || { echo "usage: bro-inbox done ID" >&2; exit 2; }
+    source="$CLAIMED/$id.md"
+    [[ -f "$source" ]] || { echo "no claimed note: $id" >&2; exit 1; }
+    rewrite_state "$source" "$DONE/$id.md" done
+    ;;
+  list)
+    find "$PENDING" -type f -name '*.md' | sort
+    ;;
+  *)
+    echo "usage: bro-inbox enqueue KIND CWD | claim | done ID | list" >&2
+    exit 2
+    ;;
+esac

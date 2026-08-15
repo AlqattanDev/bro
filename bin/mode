@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Back-compat. Prefer: bro quiet | bro call | bro ping
+wanted="${1:-status}"
+exec "$(dirname "$0")/bro" "$wanted"

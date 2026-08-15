@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# F4 — open the mic now. Do not wait for bro to wake up.
+#
+# The capture runs in Vox immediately (broadcast note). Bro claims
+# the transcript from inbox kind=talk / undelivered_heard when it is ready.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+INBOX_TOOL="$BRO_HOME/bin/bro-inbox"
+TOKEN_FILE="${VOX_HOME:-$HOME/.vox}/control.token"
+CONTROL_URL="${VOX_CONTROL_URL:-http://127.0.0.1:8766/control}"
+HEALTH_URL="${VOX_HEALTH_URL:-http://127.0.0.1:8766/health}"
+SOCKET="${BRO_TMUX_SOCKET:-bro}"
+SESSION="${BRO_SESSION:-bro}"
+
+mkdir -p "$BRO_HOME"
+
+already_open=0
+health="$(curl -sS --max-time 1 "$HEALTH_URL" 2>/dev/null || true)"
+case "$health" in
+  *'"microphone_open":true'*) already_open=1 ;;
+esac
+
+opened=0
+if [[ "$already_open" -eq 1 ]]; then
+  opened=1
+elif [[ -r "$TOKEN_FILE" ]]; then
+  token="$(cat "$TOKEN_FILE")"
+  code="$(
+    curl -sS --max-time 2 -o /dev/null -w '%{http_code}' -X POST "$CONTROL_URL" \
+      -H "Authorization: Bearer ${token}" \
+      -H "Content-Type: application/json" \
+      -d '{"action":"note"}' 2>/dev/null || true
+  )"
+  if [[ "$code" == "202" || "$code" == "200" ]]; then
+    opened=1
+  fi
+fi
+
+{
+  if [[ "$opened" -eq 1 ]]; then
+    echo "mic=open"
+  else
+    echo "mic=failed"
+  fi
+} | "$INBOX_TOOL" enqueue talk "$(pwd 2>/dev/null || echo unknown)" >/dev/null
+
+if [[ "$opened" -eq 1 ]]; then
+  "$BRO_HOME/bin/bro-status" listening --hint 2>/dev/null || true
+  tmux -L "$SOCKET" display-message -t "$SESSION" 'talk — mic open' 2>/dev/null || true
+else
+  tmux -L "$SOCKET" display-message -t "$SESSION" 'talk — bro is picking up' 2>/dev/null || true
+fi

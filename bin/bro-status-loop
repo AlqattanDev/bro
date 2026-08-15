@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Animate the tmux status word once a second.
+set -euo pipefail
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+FRAME="$BRO_HOME/status-frame"
+PAINT="$BRO_HOME/bin/bro-status-paint"
+n=0
+SOCKET="${BRO_TMUX_SOCKET:-bro}"
+VOX_STATE="${VOX_STATE:-$HOME/.vox/state/state.json}"
+WORD="$BRO_HOME/status-word"
+OWNER="$BRO_HOME/status-owner"
+INTERVAL="${BRO_STATUS_INTERVAL:-0.25}"
+mkdir -p "$BRO_HOME"
+[[ -f "$WORD" ]] || echo ready >"$WORD"
+while true; do
+  cur="$(tr -d '[:space:]' <"$WORD" 2>/dev/null || echo ready)"
+  if [[ -f "$OWNER" ]]; then
+    owner="$(tr -d '[:space:]' <"$OWNER" 2>/dev/null || echo hint)"
+  else
+    owner=hint
+  fi
+  vox_state=""
+  mic_open="false"
+  if [[ -f "$VOX_STATE" ]]; then
+    vox_json="$(jq -r '[.state // "", (.microphone_open // false)] | @tsv' "$VOX_STATE" 2>/dev/null || true)"
+    if [[ -n "$vox_json" ]]; then
+      IFS=$'\t' read -r vox_state mic_open <<<"$vox_json"
+    fi
+  fi
+  case "$vox_state" in
+    speaking)
+      echo speaking >"$WORD"
+      echo vox >"$OWNER"
+      ;;
+    listening)
+      if [[ "$mic_open" == true ]]; then
+        echo listening >"$WORD"
+        echo vox >"$OWNER"
+      elif [[ "$owner" != backend || "$cur" != working ]]; then
+        echo ready >"$WORD"
+        echo idle >"$OWNER"
+      fi
+      ;;
+    processing)
+      echo working >"$WORD"
+      echo vox >"$OWNER"
+      ;;
+    idle|"")
+      if [[ "$mic_open" == true ]]; then
+        echo listening >"$WORD"
+        echo vox >"$OWNER"
+      elif [[ "$owner" != backend || "$cur" != working ]]; then
+        echo ready >"$WORD"
+        echo idle >"$OWNER"
+      fi
+      ;;
+  esac
+
+  echo "$n" >"$FRAME"
+  "$PAINT" 2>/dev/null || true
+  (tmux -L "$SOCKET" list-clients -F '#{client_name}' 2>/dev/null || true) | while read -r c; do
+    tmux -L "$SOCKET" refresh-client -S -t "$c" 2>/dev/null || true
+  done
+  n=$(( (n + 1) % 10 ))
+  sleep "$INTERVAL"
+done

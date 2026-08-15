@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP="$(mktemp -d)"
+trap 'jobs -pr | xargs kill 2>/dev/null || true; rm -rf "$TMP"' EXIT
+
+fail() { echo "not ok - $*" >&2; exit 1; }
+pass() { echo "ok - $*"; }
+
+mkdir -p "$TMP/bin" "$TMP/home/bin" "$TMP/home/watch" "$TMP/vox/state"
+cp "$ROOT/bin/bro-status-loop" "$ROOT/bin/bro-status-paint" "$TMP/home/bin/"
+printf 'call\n' >"$TMP/home/mode"
+printf 'listening\n' >"$TMP/home/status-word"
+printf '0\n' >"$TMP/home/status-frame"
+
+cat >"$TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"list-clients"* ]]; then exit 1; fi
+exit 0
+EOF
+chmod +x "$TMP/bin/tmux"
+
+cat >"$TMP/vox/state/state.json" <<'EOF'
+{"state":"idle","microphone_open":false}
+EOF
+
+PATH="$TMP/bin:$PATH" BRO_HOME="$TMP/home" VOX_STATE="$TMP/vox/state/state.json" \
+  BRO_STATUS_INTERVAL=0.05 "$TMP/home/bin/bro-status-loop" &
+status_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ "$(cat "$TMP/home/status-word")" == ready ]] && break
+  sleep 0.1
+done
+kill -0 "$status_pid" 2>/dev/null || fail "status loop survives tmux with no clients"
+[[ "$(cat "$TMP/home/status-word")" == ready ]] || fail "idle Vox state returns status to ready"
+cat >"$TMP/vox/state/state.json" <<'EOF'
+{"state":"listening","microphone_open":true}
+EOF
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ "$(cat "$TMP/home/status-word")" == listening ]] && break
+  sleep 0.1
+done
+[[ "$(cat "$TMP/home/status-word")" == listening ]] || fail "open microphone sets listening"
+cat >"$TMP/vox/state/state.json" <<'EOF'
+{"state":"speaking","microphone_open":false}
+EOF
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ "$(cat "$TMP/home/status-word")" == speaking ]] && break
+  sleep 0.1
+done
+[[ "$(cat "$TMP/home/status-word")" == speaking ]] || fail "Vox speaking sets speaking"
+cat >"$TMP/vox/state/state.json" <<'EOF'
+{"state":"idle","microphone_open":false}
+EOF
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ "$(cat "$TMP/home/status-word")" == ready ]] && break
+  sleep 0.1
+done
+[[ "$(cat "$TMP/home/status-word")" == ready ]] || fail "closed microphone returns to ready after speaking"
+printf 'quiet\n' >"$TMP/home/mode"
+BRO_HOME="$TMP/home" "$TMP/home/bin/bro-status-paint"
+grep -q 'quiet .*ready' "$TMP/home/status-line" || fail "mode prefix repaints live"
+kill "$status_pid"
+wait "$status_pid" 2>/dev/null || true
+pass "status loop survives tmux absence and follows Vox through listening, speaking, and ready"
+
+SUP_HOME="$TMP/supervise-home"
+mkdir -p "$SUP_HOME/bin" "$SUP_HOME/logs" "$SUP_HOME/watch"
+cp "$ROOT/bin/bro" "$SUP_HOME/bin/"
+cat >"$SUP_HOME/bin/bro-watch-loop" <<'EOF'
+#!/usr/bin/env bash
+while true; do sleep 10; done
+EOF
+cat >"$SUP_HOME/bin/bro-status-loop" <<'EOF'
+#!/usr/bin/env bash
+while true; do sleep 10; done
+EOF
+cat >"$SUP_HOME/bin/bro-snapshot" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$SUP_HOME/bin/"*
+sleep 30 &
+watch_pid=$!
+echo "$watch_pid" >"$SUP_HOME/watch/watch.pid"
+cat >"$TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$TMP/bin/tmux"
+PATH="$TMP/bin:$PATH" BRO_HOME="$SUP_HOME" "$SUP_HOME/bin/bro" attach
+first_status_pid="$(cat "$SUP_HOME/status-loop.pid")"
+kill -0 "$first_status_pid" 2>/dev/null || fail "attach starts status loop independently of living watch loop"
+kill "$first_status_pid"
+wait "$first_status_pid" 2>/dev/null || true
+PATH="$TMP/bin:$PATH" BRO_HOME="$SUP_HOME" "$SUP_HOME/bin/bro" attach
+second_status_pid="$(cat "$SUP_HOME/status-loop.pid")"
+[[ "$second_status_pid" != "$first_status_pid" ]] || fail "attach replaces dead status loop pid"
+kill -0 "$second_status_pid" 2>/dev/null || fail "replacement status loop is alive"
+kill "$second_status_pid" "$watch_pid" 2>/dev/null || true
+wait "$second_status_pid" "$watch_pid" 2>/dev/null || true
+pass "every attach supervises and restarts the status loop"
+
+QUEUE_HOME="$TMP/queue-home"
+mkdir -p "$QUEUE_HOME/bin"
+cp "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-wake" "$QUEUE_HOME/bin/"
+BRO_HOME="$QUEUE_HOME" "$ROOT/bin/bro" first
+BRO_HOME="$QUEUE_HOME" "$ROOT/bin/bro" second
+pending_count="$(find "$QUEUE_HOME/inbox/pending" -type f -name '*.md' | wc -l | tr -d ' ')"
+[[ "$pending_count" -eq 2 ]] || fail "two bro notes survive in the pending queue"
+first_pending="$(find "$QUEUE_HOME/inbox/pending" -type f -name '*.md' | sort | head -1)"
+grep -qx 'state=pending' "$first_pending" || fail "queued note has explicit pending state"
+first_id="$(sed -n 's/^id=//p' "$first_pending")"
+claim_path="$(BRO_HOME="$QUEUE_HOME" "$ROOT/bin/bro-inbox" claim)"
+[[ -f "$claim_path" ]] || fail "claim moves a note to claimed"
+grep -qx 'state=claimed' "$claim_path" || fail "claimed note has explicit claimed state"
+BRO_HOME="$QUEUE_HOME" "$ROOT/bin/bro-inbox" done "$first_id"
+[[ -f "$QUEUE_HOME/inbox/done/$first_id.md" ]] || fail "done moves a claimed note to done"
+grep -qx 'state=done' "$QUEUE_HOME/inbox/done/$first_id.md" || fail "done note has explicit done state"
+pass "inbox is an atomic queue with pending, claimed, and done states"
+
+cat >"$TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"has-session"*) exit 0 ;;
+  *"display-message -p"*) printf '%s\n' "${FAKE_PANE_COMMAND:-zsh}" ;;
+  *"capture-pane"*) printf '%s\n' "${FAKE_PANE_TEXT:-ali@mac % }" ;;
+  *"send-keys"*) printf '%s\n' "$*" >>"$FAKE_TMUX_LOG" ;;
+esac
+EOF
+chmod +x "$TMP/bin/tmux"
+
+: >"$TMP/tmux.log"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" FAKE_PANE_COMMAND=codex \
+  BRO_HOME="$TMP/home" "$ROOT/bin/bro-run" 'echo unsafe' && fail "bro-run refuses codex"
+[[ ! -s "$TMP/tmux.log" ]] || fail "bro-run sent keys into codex"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" FAKE_PANE_COMMAND=zsh FAKE_PANE_TEXT='ali@mac % ' \
+  BRO_HOME="$TMP/home" "$ROOT/bin/bro-run" 'echo safe'
+grep -q 'echo safe' "$TMP/tmux.log" || fail "bro-run accepts an idle shell prompt"
+pass "bro-run refuses non-shell panes"
+
+: >"$TMP/tmux.log"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" BRO_HOME="$QUEUE_HOME" \
+  "$ROOT/bin/bro-wake" queue
+grep -q ':me' "$TMP/tmux.log" || fail "backend wakeup targets the me pane"
+pass "queue updates visibly wake the backend"

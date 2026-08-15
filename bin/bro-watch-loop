@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Quiet loop: every few seconds, refresh the snapshot of your work pane.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+INTERVAL="${BRO_WATCH_INTERVAL:-3}"
+
+while true; do
+  "$BRO_HOME/bin/bro-snapshot" >/dev/null 2>&1 || true
+  sleep "$INTERVAL"
+done

@@ -1,0 +1,13 @@
+# Runtime state and generated output — not source
+logs/
+watch/
+inbox/
+show/current.md
+bro-boot-prompt.txt
+status-word
+status-line
+status-frame
+status-owner
+status-loop.pid
+/backend
+/mode

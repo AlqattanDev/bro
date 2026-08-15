@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# bro — one front door: interactive session, or a quick non-interactive note.
+#
+# Usage:
+#   bro                     start / attach the interactive session
+#   bro <message>           send a note (answers on the F1 board)
+#   bro quiet | call | ping status current mode
+#   bro snapshot            force-read your screen into watch files
+#   bro read                print what I would see (latest snapshot)
+#   bro stop                kill the session
+#   bro backend [grok|claude|codex]
+#   bro help
+set -euo pipefail
+
+export BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+export BRO_SESSION="${BRO_SESSION:-bro}"
+export BRO_TMUX_SOCKET="${BRO_TMUX_SOCKET:-bro}"
+export PATH="$BRO_HOME/bin:$PATH"
+
+SESSION="$BRO_SESSION"
+CONF="$BRO_HOME/tmux.conf"
+WATCH="$BRO_HOME/watch"
+MODE_FILE="$BRO_HOME/mode"
+INBOX_TOOL="$BRO_HOME/bin/bro-inbox"
+# Private socket so we never fight your other tmux sessions.
+TMUXC=(tmux -L "$BRO_TMUX_SOCKET" -f "$CONF")
+
+mkdir -p "$BRO_HOME"
+cmd="${1:-start}"
+
+usage() {
+  cat <<'EOF'
+bro — full-screen work + hidden agent + clean board
+
+  bro                              Start or attach (interactive, default backend)
+  bro <message>                    Send a note, non-interactive (answers on the F1 board)
+  bro quiet                        No voice
+  bro call                         Voice, keep going
+  bro ping                         One voice reply, then silent
+  bro status                       Show current talk mode
+  bro --backend grok|claude|codex
+  bro backend                      Show current backend
+  bro backend claude               Set default backend (saved)
+  bro snapshot                     Save your pane for bro
+  bro read                         Print latest snapshot
+  bro stop                         End session
+  bro help
+
+Keys:
+  F1   clean overlay (explanations / plans)
+  F2   your full-screen work
+  F3   snapshot your screen
+  F4   talk — mic opens now, do not wait
+
+Commands run in YOUR terminal via bro-run (agent does this).
+Explanations go on the F1 board via bro-show.
+
+Watch / show:
+  ~/.bro/watch/latest.md
+  ~/.bro/show/current.md
+  ~/.bro/backend          saved backend name
+EOF
+}
+
+ensure_dirs() {
+  mkdir -p "$WATCH" "$BRO_HOME/logs"
+}
+
+start_watch_loop() {
+  # One watch loop per session, in the background on the machine.
+  local pidfile="$WATCH/watch.pid"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    return 0
+  fi
+  nohup "$BRO_HOME/bin/bro-watch-loop" >>"$BRO_HOME/logs/watch.log" 2>&1 &
+  echo $! >"$pidfile"
+}
+
+start_status_loop() {
+  local pidfile="$BRO_HOME/status-loop.pid"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    return 0
+  fi
+  nohup "$BRO_HOME/bin/bro-status-loop" >>"$BRO_HOME/logs/status.log" 2>&1 &
+  echo $! >"$pidfile"
+}
+
+stop_watch_loop() {
+  local pidfile="$WATCH/watch.pid"
+  if [[ -f "$pidfile" ]]; then
+    kill "$(cat "$pidfile")" 2>/dev/null || true
+    rm -f "$pidfile"
+  fi
+  local spid="$BRO_HOME/status-loop.pid"
+  if [[ -f "$spid" ]]; then
+    kill "$(cat "$spid")" 2>/dev/null || true
+    rm -f "$spid"
+  fi
+}
+
+create_session() {
+  ensure_dirs
+  start_watch_loop
+  start_status_loop
+
+  # Window "you": full work surface
+  "${TMUXC[@]}" new-session -d -s "$SESSION" -n you \
+    "export BRO_HOME='$BRO_HOME'; export BRO_SESSION='$SESSION'; export BRO_TMUX_SOCKET='$BRO_TMUX_SOCKET'; cd '${BRO_START_DIR:-$HOME}'; exec ${SHELL:-/bin/zsh} -i"
+
+  # Window "me": bro (hidden until you call it up)
+  "${TMUXC[@]}" new-window -t "$SESSION" -n me \
+    "export BRO_HOME='$BRO_HOME'; export BRO_SESSION='$SESSION'; export BRO_TMUX_SOCKET='$BRO_TMUX_SOCKET'; exec '$BRO_HOME/bin/bro-shell' window"
+
+  "${TMUXC[@]}" select-window -t "$SESSION:you"
+
+  # First snapshot
+  sleep 0.3
+  "$BRO_HOME/bin/bro-snapshot" || true
+
+  "${TMUXC[@]}" display-message -t "$SESSION" 'bro ready — Ctrl-a p shows me, Ctrl-a o hides me'
+}
+
+case "$cmd" in
+  ""|start|attach)
+    ensure_dirs
+    if ! "${TMUXC[@]}" has-session -t "$SESSION" 2>/dev/null; then
+      create_session
+    else
+      start_watch_loop
+      start_status_loop
+    fi
+    exec "${TMUXC[@]}" attach -t "$SESSION"
+    ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  --backend)
+    export BRO_BACKEND="${2:-}"
+    if [[ -z "$BRO_BACKEND" ]]; then
+      echo "usage: bro --backend grok|claude|codex" >&2
+      exit 2
+    fi
+    echo "$BRO_BACKEND" >"$BRO_HOME/backend"
+    exec env BRO_BACKEND="$BRO_BACKEND" "$0" start
+    ;;
+  backend)
+    if [[ -n "${2:-}" ]]; then
+      echo "$2" >"$BRO_HOME/backend"
+      echo "backend set to $2"
+    else
+      if [[ -f "$BRO_HOME/backend" ]]; then
+        echo "backend: $(cat "$BRO_HOME/backend")"
+      else
+        echo "backend: ${BRO_BACKEND:-grok} (default)"
+      fi
+    fi
+    ;;
+  snapshot)
+    ensure_dirs
+    "$BRO_HOME/bin/bro-snapshot"
+    echo "Wrote $WATCH/latest.md"
+    ;;
+  read)
+    if [[ -f "$WATCH/latest.md" ]]; then
+      cat "$WATCH/latest.md"
+    else
+      echo "No snapshot yet. Run: bro snapshot"
+      exit 1
+    fi
+    ;;
+  stop)
+    stop_watch_loop
+    "${TMUXC[@]}" kill-session -t "$SESSION" 2>/dev/null || true
+    "${TMUXC[@]}" kill-session -t bro-popup 2>/dev/null || true
+    echo "bro session stopped."
+    ;;
+  status|mode)
+    if [[ -f "$MODE_FILE" ]]; then
+      echo "mode: $(cat "$MODE_FILE")"
+    else
+      echo "mode: call (default)"
+    fi
+    ;;
+  quiet|call|ping)
+    echo "$cmd" >"$MODE_FILE"
+    {
+      echo "mode=$cmd"
+    } | "$INBOX_TOOL" enqueue mode "$(pwd)" >/dev/null
+    case "$cmd" in
+      call)  echo "call  — voice, keep going" ;;
+      ping)  echo "ping  — one voice reply, then silent" ;;
+      quiet) echo "quiet — no voice, answers on F1" ;;
+    esac
+    ;;
+  *)
+    {
+      echo "$*"
+    } | "$INBOX_TOOL" enqueue ask "$(pwd)" >/dev/null
+    echo "sent"
+    ;;
+esac

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Dump what is on the "you" pane so bro can read it.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+WATCH="$BRO_HOME/watch"
+mkdir -p "$WATCH"
+
+SESSION="${BRO_SESSION:-bro}"
+SOCKET="${BRO_TMUX_SOCKET:-bro}"
+TMUXC=(tmux -L "$SOCKET")
+TARGET="${1:-${SESSION}:you}"
+
+# Prefer capturing the named "you" window; fall back to whatever is active.
+if "${TMUXC[@]}" has-session -t "$SESSION" 2>/dev/null; then
+  if "${TMUXC[@]}" list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx 'you'; then
+    TARGET="${SESSION}:you"
+  fi
+fi
+
+{
+  echo "### bro snapshot"
+  echo "time: $(date '+%Y-%m-%d %H:%M:%S %z')"
+  echo "target: $TARGET"
+  echo "host: $(hostname -s 2>/dev/null || hostname)"
+  if [[ -f "$WATCH/status.env" ]]; then
+    echo "--- shell status ---"
+    cat "$WATCH/status.env"
+  fi
+  echo "--- pane text (bottom of scrollback) ---"
+} >"$WATCH/latest.md"
+
+# Last ~200 lines of the work pane (enough for errors without huge files).
+if "${TMUXC[@]}" capture-pane -t "$TARGET" -p -S -200 >>"$WATCH/latest.md" 2>/dev/null; then
+  cp "$WATCH/latest.md" "$WATCH/scrollback.txt"
+  # Also append a short marker to a rolling log
+  {
+    echo ""
+    echo "===== $(date '+%H:%M:%S') ====="
+    tail -n 40 "$WATCH/latest.md"
+  } >>"$WATCH/stream.log"
+  # Keep stream.log from growing forever (~1MB cap by truncation)
+  if [[ -f "$WATCH/stream.log" ]] && [[ $(wc -c <"$WATCH/stream.log") -gt 1000000 ]]; then
+    tail -c 500000 "$WATCH/stream.log" >"$WATCH/stream.log.tmp"
+    mv "$WATCH/stream.log.tmp" "$WATCH/stream.log"
+  fi
+  exit 0
+fi
+
+echo "snapshot failed: no pane $TARGET" >>"$WATCH/latest.md"
+exit 1
