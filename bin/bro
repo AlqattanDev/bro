@@ -34,6 +34,7 @@ bro — full-screen work + hidden agent + clean board
 
   bro                              Start or attach (interactive, default backend)
   bro <message>                    Send a note, non-interactive (answers on the F1 board)
+  bro ask <message>                Same, but safe when <message> starts with a subcommand word
   bro quiet                        No voice
   bro call                         Voice, keep going
   bro ping                         One voice reply, then silent
@@ -192,6 +193,17 @@ case "$cmd" in
       ping)  echo "ping  — one voice reply, then silent" ;;
       quiet) echo "quiet — no voice, answers on F1" ;;
     esac
+    ;;
+  ask)
+    shift
+    if [[ $# -eq 0 ]]; then
+      echo "usage: bro ask <message>" >&2
+      exit 2
+    fi
+    {
+      echo "$*"
+    } | "$INBOX_TOOL" enqueue ask "$(pwd)" >/dev/null
+    echo "sent"
     ;;
   *)
     {

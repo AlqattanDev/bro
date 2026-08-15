@@ -35,24 +35,5 @@ fi
 
 _bro_write_status 0
 
-# bro <tab> → quiet / call / ping / status
-if (( $+functions[compdef] )); then
-  _bro() {
-    local -a cmds
-    cmds=(
-      'quiet:no voice — answers on F1'
-      'call:voice, keep going'
-      'ping:one voice reply, then silent'
-      'status:show current mode'
-      'snapshot:save your pane for bro'
-      'read:print latest snapshot'
-      'stop:end session'
-      'backend:show/set backend'
-      'help:show usage'
-    )
-    if (( CURRENT == 2 )); then
-      _describe -t commands 'bro' cmds
-    fi
-  }
-  compdef _bro bro
-fi
+# Tab completion for `bro` is always loaded — see bro-completion.zsh — not
+# gated here, since you want it in every terminal, not just inside a session.

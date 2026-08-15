@@ -53,6 +53,8 @@ One command, in or out of the session:
 ```bash
 bro                              start / attach the interactive session
 bro how do I undo the last commit
+bro ask stop the deploy pipeline  # "ask" if your message starts with a
+                                   # word like stop/read/backend/snapshot
 bro quiet
 bro call
 bro ping
