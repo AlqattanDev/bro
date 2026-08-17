@@ -40,6 +40,47 @@ acts on something — when you ask it a question, when you run `bro read` or
 the terminal) is only ever captured on F3 or an explicit ask, and
 `~/.bro/show-policy` set to `no-screen` turns even that off.
 
+## Summon from anywhere
+
+Two global keys, live in every app, with no terminal open and no permission
+prompt (they use Carbon hotkeys, which need no Accessibility grant):
+
+| Key | What |
+|---|---|
+| **⌥§** | Talk. The mic opens immediately — say it and go back to work. |
+| **⌃§** | Type. A one-line field appears; **Enter** sends, **Esc** cancels. |
+
+`§` is the key left of `1`. Vox keeps `⌘§`; bro took the two neighbours.
+
+Both are **asynchronous**. The key returns you instantly, the menu bar goes to
+`working`, and the answer arrives in the floating panel and out loud whenever
+it is ready. Fire a long job and keep working — press again and the second ask
+queues behind the first instead of replacing it.
+
+The typed field is the one bro surface that takes your keyboard, and only while
+it is open: it remembers the app you were in and hands focus straight back on
+Enter or Esc. The answer panel still never takes focus, ever.
+
+Point it at what you are looking at: "what's this error in the IDE", "read this
+page for me", "help me with this code" makes bro photograph the screen once and
+answer from it. Same gate as always — one ask, one look, and `~/.bro/show-policy`
+set to `no-screen` turns it off.
+
+Without touching the keyboard:
+
+```bash
+bro summon "what's failing in this build"
+bro summon voice
+bro hotkeys                # which keys are live right now
+```
+
+Rebind in `~/.bro/hotkeys` (plain text, one binding per line, `off` disables):
+
+```
+voice option+section
+text  cmd+shift+space
+```
+
 ## Keys
 
 | Key | What |

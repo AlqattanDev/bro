@@ -1,15 +1,33 @@
 #!/bin/zsh
-# Build dist/BroBar.app — bro's menu bar face.
+# Build dist/BroBar.app — bro's menu bar face, floating answer panel, and the
+# global summon hotkeys.
 #
-# Ad-hoc signing unconditionally: BroBar requires no TCC-gated capability (no
-# mic, no screen recording), so a fresh cdhash on every build revokes nothing
-# it needs. That is why this is much shorter than vox-mcp's equivalent.
-#
-# One optional exception: the answer panel watches for a global Esc only if the
-# app already happens to be trusted for Accessibility, and a rebuild does drop
-# that trust. Nothing breaks — click and F1 still dismiss the panel — so this
-# stays a plain ad-hoc sign rather than vox-mcp's stable-identity dance.
+# Signed with a stable identity, not ad-hoc. Ad-hoc signing mints a new cdhash
+# on every build, and TCC keys its grants on that hash: each rebuild silently
+# dropped whatever Accessibility trust the app had, which is exactly why
+# Esc-to-dismiss on the answer panel kept dying after a build. The identity is
+# the self-signed `Vox Local Signing` certificate already in the login keychain
+# (vox-mcp created it for the same reason). If it is not there, fall back to
+# ad-hoc and say so out loud — the app still runs, the summon hotkeys still
+# work (Carbon needs no grant at all), only the optional Esc trust is lost.
 set -euo pipefail
+
+IDENTITY="${BRO_SIGN_IDENTITY:-Vox Local Signing}"
+
+have_identity() {
+  /usr/bin/security find-identity -p codesigning 2>/dev/null | grep -q "\"$IDENTITY\""
+}
+
+# `build-bro-bar --identity` answers "which signature would this build get?"
+# without compiling anything, so the choice above is testable in tests/run.
+if [[ "${1:-}" == "--identity" ]]; then
+  if have_identity; then
+    printf '%s\n' "$IDENTITY"
+  else
+    printf 'ad-hoc\n'
+  fi
+  exit 0
+fi
 
 ROOT="${0:A:h:h}"
 APP="$ROOT/dist/BroBar.app"
@@ -23,11 +41,22 @@ mkdir -p "$MACOS"
   -target arm64-apple-macosx13.0 \
   -O \
   -framework AppKit \
+  -framework Carbon \
   "$ROOT/macos/BroBar.swift" \
   "$ROOT/macos/BroPanel.swift" \
+  "$ROOT/macos/BroSummon.swift" \
   "$ROOT/macos/main.swift" \
   -o "$MACOS/BroBar"
 /bin/cp "$ROOT/macos/Info.plist" "$CONTENTS/Info.plist"
 /usr/bin/plutil -lint "$CONTENTS/Info.plist"
-/usr/bin/codesign --force --deep --sign - "$APP"
+
+if have_identity; then
+  /usr/bin/codesign --force --deep --sign "$IDENTITY" "$APP"
+  echo "signed: $IDENTITY (stable hash — Accessibility trust survives this build)"
+else
+  /usr/bin/codesign --force --deep --sign - "$APP"
+  echo "warning: no '$IDENTITY' identity in the keychain — signed ad-hoc." >&2
+  echo "warning: the hash changed, so any Accessibility trust was just dropped" >&2
+  echo "warning: and Esc-to-dismiss on the answer panel needs re-granting." >&2
+fi
 echo "$APP"

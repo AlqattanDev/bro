@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Summon bro from anywhere — no terminal, no session, no waiting.
+#
+# This is what the global hotkeys in BroBar run. Both forms return immediately:
+# the ask lands in the durable inbox queue (bin/bro-inbox, atomic), the menu bar
+# goes to `working`, and the answer comes back later in the floating panel and
+# out loud. Firing a second summon while one is in flight queues behind it —
+# the queue is a directory of files, not a slot, so nothing is clobbered.
+#
+# Usage:
+#   bro-summon voice            open the mic now (same path as F4)
+#   bro-summon text "question"  queue a typed ask
+#   bro-summon text             queue a typed ask read from stdin
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+INBOX_TOOL="$BRO_HOME/bin/bro-inbox"
+mkdir -p "$BRO_HOME"
+
+case "${1:-}" in
+  voice)
+    # Reuse bro-talk rather than reimplement the Vox control call: one place
+    # knows how to open the mic, and F4 and the global hotkey stay identical.
+    exec "$BRO_HOME/bin/bro-talk"
+    ;;
+  text)
+    shift
+    if [[ $# -gt 0 ]]; then
+      text="$*"
+    else
+      text="$(cat)"
+    fi
+    # Blank input is a cancelled summon, not an empty question.
+    if [[ -z "${text//[[:space:]]/}" ]]; then
+      exit 0
+    fi
+    id="$(
+      {
+        # The backend reads this marker in the boot prompt: a summon has no
+        # terminal behind it, so the answer belongs in the panel and out loud.
+        echo "source=summon"
+        echo ""
+        printf '%s\n' "$text"
+      } | "$INBOX_TOOL" enqueue ask "$HOME"
+    )"
+    # Say so immediately: the point of an async summon is that the bar tells
+    # you bro took the job while you go back to what you were doing.
+    "$BRO_HOME/bin/bro-status" working 2>/dev/null || true
+    printf '%s\n' "$id"
+    ;;
+  *)
+    echo "usage: bro-summon voice | bro-summon text [QUESTION]" >&2
+    exit 2
+    ;;
+esac

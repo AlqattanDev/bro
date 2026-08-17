@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Resolve bro's global hotkeys into something BroBar can register.
+#
+# Parsing lives here, in shell, for the same reason every other bro control
+# file does: it is one plain-text file, it is testable from bash, and BroBar
+# stays a face rather than a config parser. BroBar runs this once at launch and
+# registers whatever it prints; if this script is missing or broken, BroBar
+# falls back to the same defaults spelled out below.
+#
+# Control file: ~/.bro/hotkeys — one binding per line, comments with #.
+#
+#     voice  option+section     # summon by voice   (default)
+#     text   control+section    # summon by typing  (default)
+#     voice  off                # disable a summon entirely
+#
+# Modifiers: cmd/command/⌘, opt/option/alt/⌥, ctrl/control/⌃, shift/⇧.
+# Keys: section (the key left of 1), a–z, 0–9, f1–f19, space, escape, tab,
+# return, arrows, and the usual punctuation names (grave, minus, comma, ...).
+#
+# Output, one line per binding, for BroBar to split on spaces:
+#
+#     voice keycode=10 modifiers=2048 label=⌥§
+#     text keycode=10 modifiers=4096 label=⌃§
+#
+# A disabled binding prints `NAME off`. Anything unparseable falls back to the
+# default for that name and explains itself on stderr — a typo in this file
+# must never leave bro unreachable.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+FILE="${BRO_HOTKEYS_FILE:-$BRO_HOME/hotkeys}"
+
+# Defaults. Both summons sit on §, the key left of 1: one key to remember, the
+# modifier picks voice or text. Vox owns ⌘§ on this machine (vox-mcp
+# macos/VoxStatus.swift), so bro deliberately takes the two neighbours it does
+# not use. Neither ⌥§ nor ⌃§ is a macOS system shortcut.
+DEFAULT_voice="option+section"
+DEFAULT_text="control+section"
+
+# Carbon modifier bits (MacTypes: cmdKey/shiftKey/optionKey/controlKey).
+MOD_CMD=256
+MOD_SHIFT=512
+MOD_OPTION=2048
+MOD_CONTROL=4096
+
+# Vox's binding, so we can warn instead of silently losing a key to it.
+VOX_KEYCODE=10
+VOX_MODIFIERS=$MOD_CMD
+
+keycode_for() {
+  case "$1" in
+    section|iso-section|§) echo 10 ;;
+    a) echo 0 ;;   s) echo 1 ;;   d) echo 2 ;;   f) echo 3 ;;
+    h) echo 4 ;;   g) echo 5 ;;   z) echo 6 ;;   x) echo 7 ;;
+    c) echo 8 ;;   v) echo 9 ;;   b) echo 11 ;;  q) echo 12 ;;
+    w) echo 13 ;;  e) echo 14 ;;  r) echo 15 ;;  y) echo 16 ;;
+    t) echo 17 ;;  o) echo 31 ;;  u) echo 32 ;;  i) echo 34 ;;
+    p) echo 35 ;;  l) echo 37 ;;  j) echo 38 ;;  k) echo 40 ;;
+    n) echo 45 ;;  m) echo 46 ;;
+    1) echo 18 ;;  2) echo 19 ;;  3) echo 20 ;;  4) echo 21 ;;
+    5) echo 23 ;;  6) echo 22 ;;  7) echo 26 ;;  8) echo 28 ;;
+    9) echo 25 ;;  0) echo 29 ;;
+    f1) echo 122 ;;  f2) echo 120 ;;  f3) echo 99 ;;   f4) echo 118 ;;
+    f5) echo 96 ;;   f6) echo 97 ;;   f7) echo 98 ;;   f8) echo 100 ;;
+    f9) echo 101 ;;  f10) echo 109 ;; f11) echo 103 ;; f12) echo 111 ;;
+    f13) echo 105 ;; f14) echo 107 ;; f15) echo 113 ;; f16) echo 106 ;;
+    f17) echo 64 ;;  f18) echo 79 ;;  f19) echo 80 ;;
+    space) echo 49 ;; escape|esc) echo 53 ;; tab) echo 48 ;;
+    return|enter) echo 36 ;;
+    grave|backtick) echo 50 ;; minus) echo 27 ;; equal) echo 24 ;;
+    leftbracket) echo 33 ;; rightbracket) echo 30 ;; quote) echo 39 ;;
+    semicolon) echo 41 ;; backslash) echo 42 ;; comma) echo 43 ;;
+    slash) echo 44 ;; period|dot) echo 47 ;;
+    left) echo 123 ;; right) echo 124 ;; down) echo 125 ;; up) echo 126 ;;
+    *) return 1 ;;
+  esac
+}
+
+key_glyph() {
+  case "$1" in
+    section|iso-section|§) printf '§' ;;
+    space) printf 'Space' ;;
+    escape|esc) printf 'Esc' ;;
+    return|enter) printf '↩' ;;
+    tab) printf '⇥' ;;
+    left) printf '←' ;; right) printf '→' ;; up) printf '↑' ;; down) printf '↓' ;;
+    grave|backtick) printf '`' ;;
+    f[0-9]*) printf '%s' "$(tr '[:lower:]' '[:upper:]' <<<"$1")" ;;
+    *) printf '%s' "$(tr '[:lower:]' '[:upper:]' <<<"$1")" ;;
+  esac
+}
+
+# spec -> "keycode modifiers label", or non-zero with a reason on stderr.
+parse_spec() {
+  local spec="$1" part key="" mods=0 glyphs=""
+  spec="$(tr '[:upper:]' '[:lower:]' <<<"$spec" | tr -d '[:space:]')"
+  [[ -n "$spec" ]] || { echo "empty binding" >&2; return 1; }
+
+  # Split on + and -, so both cmd+shift+t and cmd-shift-t read the same. A key
+  # literally named "minus" survives because it is spelled out, not "-".
+  local IFS='+'
+  for part in ${spec//-/+}; do
+    [[ -n "$part" ]] || continue
+    case "$part" in
+      cmd|command|⌘)      mods=$((mods | MOD_CMD));     glyphs="${glyphs}⌘" ;;
+      opt|option|alt|⌥)   mods=$((mods | MOD_OPTION));  glyphs="${glyphs}⌥" ;;
+      ctrl|control|⌃)     mods=$((mods | MOD_CONTROL)); glyphs="${glyphs}⌃" ;;
+      shift|⇧)            mods=$((mods | MOD_SHIFT));   glyphs="${glyphs}⇧" ;;
+      *)
+        if [[ -n "$key" ]]; then
+          echo "two keys in one binding: $spec" >&2
+          return 1
+        fi
+        key="$part"
+        ;;
+    esac
+  done
+  unset IFS
+
+  local code
+  if ! code="$(keycode_for "$key")"; then
+    echo "unknown key: ${key:-<none>}" >&2
+    return 1
+  fi
+  if [[ "$mods" -eq 0 ]]; then
+    # A bare key would swallow that key system-wide. Never register one.
+    echo "binding needs a modifier: $spec" >&2
+    return 1
+  fi
+  printf '%s %s %s%s\n' "$code" "$mods" "$glyphs" "$(key_glyph "$key")"
+}
+
+# Read the control file into voice=... / text=... overrides.
+want_voice=""
+want_text=""
+if [[ -r "$FILE" ]]; then
+  while read -r name spec _rest; do
+    [[ -n "${name:-}" ]] || continue
+    case "$name" in \#*) continue ;; esac
+    case "$name" in
+      voice) want_voice="$spec" ;;
+      text)  want_text="$spec" ;;
+      *) echo "bro-hotkeys: ignoring unknown binding '$name'" >&2 ;;
+    esac
+  done <"$FILE"
+fi
+
+emit() {
+  local name="$1" spec="$2" default="$3" parsed
+  if [[ -z "$spec" ]]; then
+    spec="$default"
+  fi
+  case "$(tr '[:upper:]' '[:lower:]' <<<"$spec")" in
+    off|none|disabled)
+      printf '%s off\n' "$name"
+      return 0
+      ;;
+  esac
+  if ! parsed="$(parse_spec "$spec")"; then
+    echo "bro-hotkeys: $name '$spec' is not usable, falling back to $default" >&2
+    parsed="$(parse_spec "$default")"
+  fi
+  read -r code mods label <<<"$parsed"
+  if [[ "$code" -eq "$VOX_KEYCODE" && "$mods" -eq "$VOX_MODIFIERS" ]]; then
+    echo "bro-hotkeys: $name collides with Vox's ⌘§ — expect one of them to lose" >&2
+  fi
+  printf '%s keycode=%s modifiers=%s label=%s\n' "$name" "$code" "$mods" "$label"
+}
+
+emit voice "$want_voice" "$DEFAULT_voice"
+emit text "$want_text" "$DEFAULT_text"

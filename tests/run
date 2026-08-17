@@ -496,6 +496,172 @@ PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/s
 [[ ! -s "$TMP/capture.log" ]] || fail "guarded context still ran screencapture"
 pass "every look is a fresh look, and no non-ask context can photograph the screen"
 
+# Phase 6: bro is summonable from anywhere. Hotkey parsing lives in
+# bin/bro-hotkeys precisely so the bindings can be proven here rather than only
+# inside a compiled app.
+HK="$ROOT/bin/bro-hotkeys"
+defaults="$(BRO_HOTKEYS_FILE="$TMP/no-such-hotkeys" "$HK")"
+grep -qx 'voice keycode=10 modifiers=2048 label=⌥§' <<<"$defaults" \
+  || fail "voice summon defaults to ⌥§ with no config"
+grep -qx 'text keycode=10 modifiers=4096 label=⌃§' <<<"$defaults" \
+  || fail "text summon defaults to ⌃§ with no config"
+# Neither default may be Vox's ⌘§ (keycode 10, modifiers 256).
+grep -q 'modifiers=256' <<<"$defaults" && fail "a default summon collides with Vox's ⌘§"
+# The control file overrides, in the same plain-text shape as mode/show-policy.
+cat >"$TMP/hotkeys" <<'EOF'
+# comment lines and blank lines are ignored
+
+voice cmd+shift+b
+text off
+nonsense whatever
+EOF
+custom="$(BRO_HOTKEYS_FILE="$TMP/hotkeys" "$HK" 2>/dev/null)"
+grep -qx 'voice keycode=11 modifiers=768 label=⌘⇧B' <<<"$custom" \
+  || fail "hotkeys file rebinds the voice summon"
+grep -qx 'text off' <<<"$custom" || fail "a summon can be turned off entirely"
+# A typo must never leave bro unreachable: bad bindings fall back to the default.
+cat >"$TMP/hotkeys-bad" <<'EOF'
+voice zzz+qqq
+text j
+EOF
+recovered="$(BRO_HOTKEYS_FILE="$TMP/hotkeys-bad" "$HK" 2>/dev/null)"
+grep -qx 'voice keycode=10 modifiers=2048 label=⌥§' <<<"$recovered" \
+  || fail "an unparseable binding falls back to the default"
+grep -qx 'text keycode=10 modifiers=4096 label=⌃§' <<<"$recovered" \
+  || fail "a modifier-less binding is refused instead of swallowing a bare key"
+pass "global summon hotkeys read a control file, default clear of Vox, and survive a typo"
+
+SUMMON_HOME="$TMP/summon-home"
+mkdir -p "$SUMMON_HOME/bin"
+cp "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-status" "$ROOT/bin/bro-summon" "$SUMMON_HOME/bin/"
+cat >"$SUMMON_HOME/bin/bro-wake" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_WAKE_LOG:-/dev/null}"
+EOF
+cat >"$SUMMON_HOME/bin/bro-status-paint" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+# The voice summon must not reimplement the Vox call — it hands off to bro-talk,
+# so the hotkey and F4 can never drift apart.
+cat >"$SUMMON_HOME/bin/bro-talk" <<'EOF'
+#!/usr/bin/env bash
+printf 'talk %s\n' "$*" >>"$FAKE_TALK_LOG"
+EOF
+chmod +x "$SUMMON_HOME/bin/"*
+: >"$TMP/wake.log"
+: >"$TMP/talk.log"
+summon_env=(BRO_HOME="$SUMMON_HOME" FAKE_WAKE_LOG="$TMP/wake.log" FAKE_TALK_LOG="$TMP/talk.log")
+env "${summon_env[@]}" "$SUMMON_HOME/bin/bro-summon" voice
+grep -qx 'talk ' "$TMP/talk.log" || fail "voice summon runs bro-talk with no arguments"
+
+# A typed summon returns immediately, leaving the ask pending and the bar working.
+started="$(date +%s)"
+first_summon="$(env "${summon_env[@]}" "$SUMMON_HOME/bin/bro-summon" text 'what is on my screen')"
+elapsed=$(( $(date +%s) - started ))
+[[ "$elapsed" -le 2 ]] || fail "a summon blocked instead of returning immediately"
+[[ -n "$first_summon" ]] || fail "a summon prints the queued note id"
+[[ "$(cat "$SUMMON_HOME/status-word")" == working ]] || fail "a summon puts the bar in working"
+summon_note="$SUMMON_HOME/inbox/pending/$first_summon.md"
+[[ -f "$summon_note" ]] || fail "a summon leaves a pending note for the backend to claim"
+grep -qx 'kind=ask' "$summon_note" || fail "a typed summon is queued as an ask"
+grep -qx 'source=summon' "$summon_note" || fail "a summoned ask is marked as coming from a summon"
+grep -q 'what is on my screen' "$summon_note" || fail "the question survives into the note"
+[[ -s "$TMP/wake.log" ]] || fail "a summon wakes the backend"
+# Stdin is the other way in — what the panel's text field could use directly.
+printf 'from stdin\n' | env "${summon_env[@]}" "$SUMMON_HOME/bin/bro-summon" text >/dev/null
+grep -rql 'from stdin' "$SUMMON_HOME/inbox/pending" >/dev/null \
+  || fail "a summon reads the question from stdin too"
+# Whitespace is a cancelled summon, not an empty question in the queue.
+before_blank="$(find "$SUMMON_HOME/inbox/pending" -type f -name '*.md' | wc -l | tr -d ' ')"
+printf '   \n' | env "${summon_env[@]}" "$SUMMON_HOME/bin/bro-summon" text >/dev/null
+after_blank="$(find "$SUMMON_HOME/inbox/pending" -type f -name '*.md' | wc -l | tr -d ' ')"
+[[ "$before_blank" -eq "$after_blank" ]] || fail "a blank summon queued an empty ask"
+
+# Firing again while one is in flight queues behind it. Nothing is clobbered:
+# the inbox is a directory of files, not a slot.
+rm -rf "$SUMMON_HOME/inbox"
+for i in 1 2 3 4 5 6; do
+  env "${summon_env[@]}" "$SUMMON_HOME/bin/bro-summon" text "job $i" >/dev/null &
+done
+wait
+queued="$(find "$SUMMON_HOME/inbox/pending" -type f -name '*.md' | wc -l | tr -d ' ')"
+[[ "$queued" -eq 6 ]] || fail "six simultaneous summons should queue six notes, got $queued"
+for i in 1 2 3 4 5 6; do
+  grep -rq "job $i" "$SUMMON_HOME/inbox/pending" || fail "summon 'job $i' was clobbered by another"
+done
+# ...and the backend still drains them one at a time, oldest first.
+claimed_one="$(BRO_HOME="$SUMMON_HOME" "$SUMMON_HOME/bin/bro-inbox" claim)"
+grep -qx 'state=claimed' "$claimed_one" || fail "a queued summon can still be claimed"
+[[ "$(find "$SUMMON_HOME/inbox/pending" -type f -name '*.md' | wc -l | tr -d ' ')" -eq 5 ]] \
+  || fail "claiming one summon leaves the other five queued"
+pass "a summon returns at once, shows working, and a second summon queues instead of clobbering"
+
+# The answer panel's never-takes-focus guarantee is the thing the text field was
+# most likely to break, so it is asserted at the source: the two surfaces are
+# different windows with different rules.
+grep -q 'final class AnswerPanel: NSPanel' "$ROOT/macos/BroPanel.swift" \
+  || fail "the answer panel is still its own window class"
+grep -q 'override var canBecomeKey: Bool { false }' "$ROOT/macos/BroPanel.swift" \
+  || fail "the answer panel still refuses to become key"
+# Comments in that file discuss both calls by name; only real code counts.
+panel_code="$TMP/BroPanel.code"
+grep -v '^[[:space:]]*//' "$ROOT/macos/BroPanel.swift" >"$panel_code"
+grep -q 'activate(ignoringOtherApps' "$panel_code" \
+  && fail "the answer panel activates the app"
+grep -q 'makeKeyAndOrderFront' "$panel_code" \
+  && fail "the answer panel makes itself key"
+grep -q 'final class SummonPanel: NSPanel' "$ROOT/macos/BroSummon.swift" \
+  || fail "the typed summon uses a separate key-capable window"
+grep -q 'previous.activate()' "$ROOT/macos/BroSummon.swift" \
+  || fail "the summon field hands focus back to the app it interrupted"
+pass "the typed summon takes the keyboard and gives it back; the answer panel never takes it"
+
+# Signing: a stable identity, so a rebuild does not silently drop Accessibility
+# trust (which is what kept breaking Esc-to-dismiss).
+chosen="$("$ROOT/bin/build-bro-bar" --identity)"
+if security find-identity -p codesigning 2>/dev/null | grep -q '"Vox Local Signing"'; then
+  [[ "$chosen" == "Vox Local Signing" ]] \
+    || fail "the build must use the real identity when the machine has one, got '$chosen'"
+  if [[ -d "$ROOT/dist/BroBar.app" ]]; then
+    # Captured, not piped into grep -q: closing the pipe early would kill
+    # codesign and pipefail would blame the signature for it.
+    signature="$(codesign -dvvv "$ROOT/dist/BroBar.app" 2>&1 || true)"
+    grep -q 'Authority=Vox Local Signing' <<<"$signature" \
+      || fail "the built app is not signed with the stable identity"
+  fi
+else
+  [[ "$chosen" == "ad-hoc" ]] || fail "with no identity the build should say ad-hoc"
+fi
+[[ "$(BRO_SIGN_IDENTITY='No Such Identity Exists' "$ROOT/bin/build-bro-bar" --identity)" == ad-hoc ]] \
+  || fail "a missing identity must fall back to ad-hoc rather than fail the build"
+pass "BroBar signs with the stable Vox Local Signing identity and falls back to ad-hoc without it"
+
+# The boot prompt is what makes a summon screen-aware. Run the backend shell
+# with an unknown backend so it writes the prompt and then idles.
+PROMPT_HOME="$TMP/prompt-home"
+mkdir -p "$PROMPT_HOME/bin"
+cp "$ROOT/bin/bro-status" "$ROOT/bin/bro-status-paint" "$PROMPT_HOME/bin/"
+BRO_HOME="$PROMPT_HOME" BRO_BACKEND=none "$ROOT/bin/bro-shell" >/dev/null 2>&1 &
+prompt_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -s "$PROMPT_HOME/bro-boot-prompt.txt" ]] && break
+  sleep 0.1
+done
+kill "$prompt_pid" 2>/dev/null || true
+wait "$prompt_pid" 2>/dev/null || true
+prompt="$PROMPT_HOME/bro-boot-prompt.txt"
+[[ -s "$prompt" ]] || fail "bro-shell writes a boot prompt"
+grep -q 'bro-snapshot --screen' "$prompt" || fail "the boot prompt still knows how to see the screen"
+grep -q 'source=summon' "$prompt" || fail "the boot prompt explains a summoned ask"
+for phrase in 'this page' 'this window' 'help me with this code' 'the IDE'; do
+  grep -q "$phrase" "$prompt" || fail "the boot prompt does not treat '$phrase' as a screen ask"
+done
+grep -q 'exactly one capture per ask' "$prompt" || fail "the one-ask-one-look gate is still stated"
+grep -q 'show-policy' "$prompt" || fail "the boot prompt still honours show-policy"
+grep -q 'ASYNCHRONOUS' "$prompt" || fail "the boot prompt tells the backend a summon is asynchronous"
+pass "the boot prompt makes a summon screen-aware and asynchronous with the gates intact"
+
 SPEAK="$ROOT/bin/bro-speakers"
 PY=""
 for cand in "$HOME/vox-mcp/.venv/bin/python" "$HOME/.local/bin/python3.13"; do

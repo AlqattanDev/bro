@@ -44,6 +44,9 @@ bro — full-screen work + hidden agent + clean board
   bro ping                         One voice reply, then silent
   bro board                        Open the nvim board (edit / scroll the answer)
   bro show [--open|--close]        Toggle the floating answer panel (F1)
+  bro summon <message>             Same as the ⌃§ hotkey: ask from anywhere, async
+  bro summon voice                 Same as the ⌥§ hotkey: open the mic now
+  bro hotkeys                      Show the global summon keys in force
   bro speakers on|off|status       Cheap two-voice ID (off by default)
   bro status                       Show current talk mode
   bro --backend grok|claude|codex
@@ -55,6 +58,11 @@ bro — full-screen work + hidden agent + clean board
   bro daemon install|uninstall     Run the backend at login under launchd
   bro daemon status|restart        (install is explicit — never automatic)
   bro help
+
+Global keys (any app, no terminal needed — BroBar registers them):
+  ⌥§   summon by voice — mic opens now, answer comes back in the panel
+  ⌃§   summon by typing — a one-line field, Enter to send, Esc to cancel
+       (rebind in ~/.bro/hotkeys; Vox keeps ⌘§)
 
 Keys:
   F1   floating answer panel — over any app, never steals focus (click to dismiss)
@@ -265,6 +273,18 @@ case "$cmd" in
   speakers)
     shift
     exec "$BRO_HOME/bin/bro-speakers" "$@"
+    ;;
+  summon)
+    # The same path the global hotkeys take (⌥§ voice, ⌃§ text), reachable from
+    # a terminal so it can be tried without pressing anything.
+    shift
+    if [[ "${1:-}" == "voice" ]]; then
+      exec "$BRO_HOME/bin/bro-summon" voice
+    fi
+    exec "$BRO_HOME/bin/bro-summon" text "$@"
+    ;;
+  hotkeys)
+    exec "$BRO_HOME/bin/bro-hotkeys"
     ;;
   quiet|call|ping)
     echo "$cmd" >"$MODE_FILE"

@@ -1,0 +1,19 @@
+# Global summon keys. Read by bin/bro-hotkeys, registered by BroBar.
+#
+# Everything here is commented out, so the defaults below are what is live:
+#
+#   voice   option+section    ⌥§   open the mic now, from any app
+#   text    control+section   ⌃§   a one-line field for a typed ask
+#
+# Both sit on §, the key left of 1 — one key, the modifier picks voice or text.
+# Vox owns ⌘§ on this machine; bro deliberately does not touch it.
+#
+# Uncomment and edit to rebind. Modifiers: cmd, opt/option/alt, ctrl, shift.
+# Keys: section, a-z, 0-9, f1-f19, space, escape, tab, return, arrows, and
+# punctuation by name (grave, minus, comma, period, slash, ...).
+# `off` disables a summon entirely. A binding with no modifier is refused —
+# it would swallow that key system-wide.
+#
+# voice option+section
+# text control+section
+
