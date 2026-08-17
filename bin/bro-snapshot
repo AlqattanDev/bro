@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Dump what is on the "you" pane so bro can read it.
+# Dump what bro is allowed to see.
+#   bro-snapshot            -> capture the tmux "you" pane (safe, timer-driven)
+#   bro-snapshot <target>   -> capture a specific tmux target
+#   bro-snapshot --screen   -> capture the whole screen (MANUAL ONLY: F3 / explicit ask)
 set -euo pipefail
 
 BRO_HOME="${BRO_HOME:-$HOME/.bro}"
@@ -9,8 +12,84 @@ mkdir -p "$WATCH"
 SESSION="${BRO_SESSION:-bro}"
 SOCKET="${BRO_TMUX_SOCKET:-bro}"
 TMUXC=(tmux -L "$SOCKET")
+
+MODE=pane
+if [[ "${1:-}" == "--screen" ]]; then
+  MODE=screen
+  shift
+fi
 TARGET="${1:-${SESSION}:you}"
 
+header() {
+  echo "### bro snapshot"
+  echo "time: $(date '+%Y-%m-%d %H:%M:%S %z')"
+  echo "host: $(hostname -s 2>/dev/null || hostname)"
+  if [[ -f "$WATCH/status.env" ]]; then
+    echo "--- shell status ---"
+    cat "$WATCH/status.env"
+  fi
+}
+
+if [[ "$MODE" == screen ]]; then
+  # --- privacy gate -------------------------------------------------------
+  # Screen capture is never automatic. The watch loop exports BRO_NO_SCREEN=1,
+  # so even if it were ever handed --screen it cannot take a picture.
+  if [[ -n "${BRO_NO_SCREEN:-}" ]]; then
+    echo "screen capture refused: automatic/timer context" >&2
+    exit 2
+  fi
+  POLICY=ask-only
+  if [[ -f "$BRO_HOME/show-policy" ]]; then
+    POLICY="$(tr -d '[:space:]' <"$BRO_HOME/show-policy")"
+    POLICY="${POLICY:-ask-only}"
+  fi
+  case "$POLICY" in
+    no-screen|screen-off|off)
+      echo "screen capture refused: show-policy=$POLICY" >&2
+      exit 3
+      ;;
+  esac
+
+  PNG="$WATCH/screen.png"
+  rm -f "$PNG"
+  # -x = no shutter sound. Main display only.
+  if ! screencapture -x -m "$PNG" 2>/dev/null; then
+    screencapture -x "$PNG" 2>/dev/null || true
+  fi
+  if [[ ! -s "$PNG" ]]; then
+    {
+      header
+      echo "--- screen ---"
+      echo "screen capture failed (screencapture produced nothing)"
+    } >"$WATCH/latest.md"
+    exit 1
+  fi
+
+  # Downscale to <=1600px wide so the image is cheap to read.
+  WIDTH="$(sips -g pixelWidth "$PNG" 2>/dev/null | awk '/pixelWidth/{print $2}')"
+  needs_resize=1
+  if [[ "$WIDTH" =~ ^[0-9]+$ ]] && (( WIDTH <= 1600 )); then
+    needs_resize=0
+  fi
+  if (( needs_resize )); then
+    sips --resampleWidth 1600 "$PNG" >/dev/null 2>&1 || true
+    WIDTH="$(sips -g pixelWidth "$PNG" 2>/dev/null | awk '/pixelWidth/{print $2}')"
+  fi
+
+  {
+    header
+    echo "--- screen ---"
+    echo "screen: $PNG"
+    echo "width: ${WIDTH:-unknown}"
+    echo "policy: $POLICY"
+    echo "captured: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Read the image at $PNG to see what is on the user's screen."
+  } >"$WATCH/latest.md"
+  cp "$WATCH/latest.md" "$WATCH/screen.md"
+  exit 0
+fi
+
+# --- pane capture (unchanged behaviour) -----------------------------------
 # Prefer capturing the named "you" window; fall back to whatever is active.
 if "${TMUXC[@]}" has-session -t "$SESSION" 2>/dev/null; then
   if "${TMUXC[@]}" list-windows -t "$SESSION" -F '#{window_name}' 2>/dev/null | grep -qx 'you'; then
@@ -26,6 +105,9 @@ fi
   if [[ -f "$WATCH/status.env" ]]; then
     echo "--- shell status ---"
     cat "$WATCH/status.env"
+  fi
+  if [[ -f "$WATCH/screen.png" ]]; then
+    echo "last screen capture: $WATCH/screen.png (only read it if the user asked about their screen)"
   fi
   echo "--- pane text (bottom of scrollback) ---"
 } >"$WATCH/latest.md"

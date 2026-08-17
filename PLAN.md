@@ -4,18 +4,6 @@ Rule: one phase per session. Finish, verify, commit explicit paths, delete the
 phase from this file, run /handoff. When no phases remain, replace this file's
 body with exactly `DONE`.
 
-## Phase 2 — global eyes: screen snapshot
-
-- `bin/bro-snapshot --screen`: `screencapture -x` the main display to
-  `~/.bro/watch/screen.png`, downscale to ≤1600px wide (sips), and reference it
-  from `~/.bro/watch/latest.md`.
-- Privacy rule stays manual-first: screen capture happens on F3 / explicit ask
-  only, never on a timer, until Ali says otherwise. Honour `show-policy`.
-- Teach the boot prompt (`bro-boot-prompt.txt`): when the user asks about
-  something "on my screen", request the screen snapshot, not the pane capture.
-- Accept: with a browser frontmost, "bro what's on my screen" answers from the
-  screenshot, not from the terminal pane.
-
 ## Phase 3 — global face: floating answer panel
 
 - Replace the nvim-board-only answer surface with a floating panel: a small

@@ -223,6 +223,94 @@ awk '
 grep -q '# Second' "$SHOW_HOME/show/current.md" || fail "bro-show writes the latest board"
 pass "bro-show replaces the previous overlay"
 
+SNAP_HOME="$TMP/snap-home"
+SNAP_BIN="$TMP/snap-bin"
+mkdir -p "$SNAP_HOME/bin" "$SNAP_HOME/watch" "$SNAP_BIN"
+cp "$ROOT/bin/bro-snapshot" "$ROOT/bin/bro-watch-loop" "$SNAP_HOME/bin/"
+cat >"$SNAP_BIN/screencapture" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_CAPTURE_LOG"
+out=""
+for a in "$@"; do case "$a" in -*) ;; *) out="$a" ;; esac; done
+[[ -n "$out" ]] && printf 'fake-png-bytes\n' >"$out"
+exit 0
+EOF
+cat >"$SNAP_BIN/sips" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_SIPS_LOG"
+if [[ "$*" == *"pixelWidth"* ]]; then
+  if grep -q resampleWidth "$FAKE_SIPS_LOG"; then
+    printf '  pixelWidth: 1600\n'
+  else
+    printf '  pixelWidth: 3024\n'
+  fi
+fi
+exit 0
+EOF
+cat >"$SNAP_BIN/tmux" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"has-session"*) exit 0 ;;
+  *"list-windows"*) printf 'you\n' ;;
+  *"capture-pane"*) printf '%s\n' "pane-line-from-terminal" ;;
+esac
+exit 0
+EOF
+chmod +x "$SNAP_BIN/"* "$SNAP_HOME/bin/"*
+: >"$TMP/capture.log"
+: >"$TMP/sips.log"
+PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/sips.log" \
+  BRO_HOME="$SNAP_HOME" "$SNAP_HOME/bin/bro-snapshot" --screen
+[[ -s "$SNAP_HOME/watch/screen.png" ]] || fail "--screen writes screen.png"
+grep -q 'screen.png' "$SNAP_HOME/watch/latest.md" || fail "latest.md references the screenshot"
+grep -q 'resampleWidth 1600' "$TMP/sips.log" || fail "wide screenshot is downscaled to 1600px"
+grep -q 'width: 1600' "$SNAP_HOME/watch/latest.md" || fail "latest.md records the downscaled width"
+# Pane capture still works and never reaches for the camera.
+: >"$TMP/capture.log"
+PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/sips.log" \
+  BRO_HOME="$SNAP_HOME" "$SNAP_HOME/bin/bro-snapshot"
+grep -q 'pane-line-from-terminal' "$SNAP_HOME/watch/latest.md" || fail "no-arg snapshot still captures the pane"
+grep -q 'target: bro:you' "$SNAP_HOME/watch/latest.md" || fail "pane snapshot still names its target"
+[[ ! -s "$TMP/capture.log" ]] || fail "pane snapshot took a screenshot"
+# show-policy can forbid screen capture outright.
+printf 'no-screen\n' >"$SNAP_HOME/show-policy"
+: >"$TMP/capture.log"
+PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/sips.log" \
+  BRO_HOME="$SNAP_HOME" "$SNAP_HOME/bin/bro-snapshot" --screen 2>/dev/null \
+  && fail "show-policy no-screen blocks capture"
+[[ ! -s "$TMP/capture.log" ]] || fail "blocked policy still ran screencapture"
+rm -f "$SNAP_HOME/show-policy"
+pass "bro-snapshot --screen shoots and downscales the display while the pane path is unchanged"
+
+# The timer loop must never be able to photograph the screen.
+LOOP_HOME="$TMP/loop-home"
+mkdir -p "$LOOP_HOME/bin" "$LOOP_HOME/watch"
+cp "$ROOT/bin/bro-watch-loop" "$LOOP_HOME/bin/"
+cat >"$LOOP_HOME/bin/bro-snapshot" <<'EOF'
+#!/usr/bin/env bash
+printf 'args=%s no_screen=%s\n' "$*" "${BRO_NO_SCREEN:-}" >>"$FAKE_SNAP_LOG"
+EOF
+chmod +x "$LOOP_HOME/bin/"*
+: >"$TMP/loop-snap.log"
+FAKE_SNAP_LOG="$TMP/loop-snap.log" BRO_HOME="$LOOP_HOME" BRO_WATCH_INTERVAL=0.05 \
+  "$LOOP_HOME/bin/bro-watch-loop" &
+loop_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -s "$TMP/loop-snap.log" ]] && break
+  sleep 0.1
+done
+kill "$loop_pid" 2>/dev/null || true
+wait "$loop_pid" 2>/dev/null || true
+[[ -s "$TMP/loop-snap.log" ]] || fail "watch loop takes snapshots at all"
+grep -q -- '--screen' "$TMP/loop-snap.log" && fail "watch loop asked for a screen capture"
+grep -q 'no_screen=1' "$TMP/loop-snap.log" || fail "watch loop exports the BRO_NO_SCREEN guard"
+: >"$TMP/capture.log"
+PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/sips.log" \
+  BRO_NO_SCREEN=1 BRO_HOME="$SNAP_HOME" "$SNAP_HOME/bin/bro-snapshot" --screen 2>/dev/null \
+  && fail "BRO_NO_SCREEN refuses a screen capture"
+[[ ! -s "$TMP/capture.log" ]] || fail "guarded context still ran screencapture"
+pass "the timer loop can never trigger a screen capture"
+
 SPEAK="$ROOT/bin/bro-speakers"
 PY=""
 for cand in "$HOME/vox-mcp/.venv/bin/python" "$HOME/.local/bin/python3.13"; do
