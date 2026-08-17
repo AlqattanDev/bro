@@ -9,16 +9,43 @@ SOCKET="${BRO_TMUX_SOCKET:-bro}"
 VOX_STATE="${VOX_STATE:-$HOME/.vox/state/state.json}"
 WORD="$BRO_HOME/status-word"
 OWNER="$BRO_HOME/status-owner"
+BACKEND_WORD="$BRO_HOME/status-backend-word"
 INTERVAL="${BRO_STATUS_INTERVAL:-0.25}"
 mkdir -p "$BRO_HOME"
 [[ -f "$WORD" ]] || echo ready >"$WORD"
-while true; do
-  cur="$(tr -d '[:space:]' <"$WORD" 2>/dev/null || echo ready)"
-  if [[ -f "$OWNER" ]]; then
-    owner="$(tr -d '[:space:]' <"$OWNER" 2>/dev/null || echo hint)"
-  else
-    owner=hint
+
+# What the backend last said about itself ("working" survives a voice turn).
+backend_word() {
+  local w
+  w="$(tr -d '[:space:]' <"$BACKEND_WORD" 2>/dev/null || true)"
+  case "$w" in
+    working|starting) echo "$w" ;;
+    *) echo ready ;;
+  esac
+}
+
+# Restore the bar to the backend's own state once vox is quiet.
+settle() {
+  local w owner age now
+  # A fresh hint (e.g. bro-talk's "listening" set just before the mic truly
+  # opens) outruns the vox state file — honour it for a few seconds instead
+  # of flapping back to ready.
+  owner="$(tr -d '[:space:]' <"$OWNER" 2>/dev/null || echo idle)"
+  if [[ "$owner" == hint ]]; then
+    now="$(date +%s)"
+    age=$(( now - $(stat -f %m "$WORD" 2>/dev/null || echo 0) ))
+    (( age <= 3 )) && return
   fi
+  w="$(backend_word)"
+  echo "$w" >"$WORD"
+  if [[ "$w" == ready ]]; then
+    echo idle >"$OWNER"
+  else
+    echo backend >"$OWNER"
+  fi
+}
+
+while true; do
   vox_state=""
   mic_open="false"
   if [[ -f "$VOX_STATE" ]]; then
@@ -32,26 +59,16 @@ while true; do
       echo speaking >"$WORD"
       echo vox >"$OWNER"
       ;;
-    listening)
-      if [[ "$mic_open" == true ]]; then
-        echo listening >"$WORD"
-        echo vox >"$OWNER"
-      elif [[ "$owner" != backend || "$cur" != working ]]; then
-        echo ready >"$WORD"
-        echo idle >"$OWNER"
-      fi
-      ;;
     processing)
       echo working >"$WORD"
       echo vox >"$OWNER"
       ;;
-    idle|"")
+    listening|idle|"")
       if [[ "$mic_open" == true ]]; then
         echo listening >"$WORD"
         echo vox >"$OWNER"
-      elif [[ "$owner" != backend || "$cur" != working ]]; then
-        echo ready >"$WORD"
-        echo idle >"$OWNER"
+      else
+        settle
       fi
       ;;
   esac

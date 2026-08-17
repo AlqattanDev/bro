@@ -5,12 +5,17 @@ BRO_HOME="${BRO_HOME:-$HOME/.bro}"
 WORD="$BRO_HOME/status-word"
 LINE="$BRO_HOME/status-line"
 OWNER="$BRO_HOME/status-owner"
+BACKEND_WORD="$BRO_HOME/status-backend-word"
 word="${1:-ready}"
 echo "$word" >"$WORD"
 if [[ "${2:-}" == "--hint" ]]; then
   echo hint >"$OWNER"
 else
   echo backend >"$OWNER"
+  # Remember the backend's own state separately, so a vox turn (speaking or
+  # listening) can borrow the bar and the loop can still restore "working"
+  # afterwards instead of forcing "ready" while the backend is mid-task.
+  echo "$word" >"$BACKEND_WORD"
 fi
 # Instant paint (loop refreshes animation)
 "$BRO_HOME/bin/bro-status-paint" 2>/dev/null || true
