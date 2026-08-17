@@ -10,6 +10,8 @@ status-line
 status-frame
 status-owner
 status-loop.pid
+bro-bar.pid
+daemon.pid
 /backend
 /mode
 /dist/
