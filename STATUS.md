@@ -1,27 +1,48 @@
-# bro — status
+# STATUS — bro
 
-Terminal-native assistant: tmux session (`bro`), Grok hidden in back, Vox for
-voice, status word in the tmux bar, F1 board / F3 snapshot / F4 talk.
+Bro is global. It is no longer a tmux thing with a terminal attached; it is a
+background service with a face in the menu bar, a panel that floats over any
+app, and a hotkey that reaches it from anywhere.
 
-## What works
+## Where it stands (2026-08-17)
 
-- Voice in/out through Vox (shared session; bro is one agent of several).
-- Status bar words: starting / working / speaking / listening / ready, painted
-  by `bin/bro-status-paint`, animated by `bin/bro-status-loop`.
-- **Status truth fix (2026-08-17):** the backend's own state now lives in
-  `status-backend-word`, written by `bin/bro-status`. A vox turn (speaking or
-  listening) borrows the bar and the loop *restores* the backend word after,
-  instead of forcing `ready` while the backend is still mid-task. Fresh
-  `--hint` writes (bro-talk's early `listening`) get a 3-second grace window.
+All six phases are implemented, tested (19 passing), and committed. The plan
+file is `DONE`.
 
-## Direction (agreed 2026-08-17)
+- Menu bar shows bro's real state from any app — `a1a8cb9`
+- Screen snapshot, ask-only, three independent gates — `1b3d336`
+- Floating answer panel that never steals focus — `2dd769d`
+- launchd daemon; closing every terminal does not kill bro — `1f7c515`
+- The 3-second watch loop is gone; bro looks when asked — `9eb6b62`
+- Global summon: ⌥§ voice, ⌃§ typed, both asynchronous — `6ecf393`
 
-Bro goes global in stages — see PLAN.md. Vox stays a separate layer (mouth and
-ears, any agent can use it); bro remains one consumer of it. Brain stays where
-it is; the eyes (terminal snapshot) and the face (tmux bar + nvim board) each
-get a global replacement, one phase at a time, each useful on its own.
+## Waiting on Ali at the keyboard
 
-## Known limits
+Nothing here is known broken — it is the part no test can reach.
 
-- Status is invisible unless a bro tmux client is on screen (Phase 1 fixes).
-- Bro sees only the terminal snapshot, not the screen (Phase 2 fixes).
+1. `bro daemon install` — deliberately not run. It writes a login item into
+   `~/Library/LaunchAgents`; that is Ali's machine startup to change, not mine.
+   Verified nothing was written there.
+2. Restart BroBar (`bro stop && bro`), then press ⌥§ and ⌃§ from a browser or
+   IDE. Confirm no permissions prompt. Carbon should not produce one.
+3. Type into the ⌃§ field: keys reach it, Enter sends, Esc cancels, focus
+   returns to the app you came from. This is the one interaction never
+   exercised headlessly. If keys do not arrive, drop `.nonactivatingPanel`
+   from `SummonPanel` only — never from `AnswerPanel`.
+4. Optional: grant BroBar Accessibility once for Esc-to-dismiss on the answer
+   panel. It now survives rebuilds, because signing is stable.
+5. `bro summon "read this page for me"` with a webpage up — confirm it takes a
+   screen snapshot, not the terminal pane.
+
+## Things worth knowing
+
+- **Two status bars, Vox and bro, still overlap.** Ali raised this and he is
+  right. Vox owns one because every voice agent needs it; bro grew its own.
+  They show the same thing whenever bro is speaking or listening. This was not
+  a decision, and it should collapse into one. Not done.
+- **The screen is ask-only on purpose.** Three gates: the caller passes no
+  `--screen`, `BRO_NO_SCREEN` refuses it in any automatic context, and
+  `show-policy` can refuse outright. Keep all three when touching this.
+- **`watch/stream.log`** now grows only when someone asks, and its 1MB cap is
+  near-irrelevant. Harmless, deletable in a later pass.
+- **Speaker ID is on**, with `ali` and `boss` enrolled.
