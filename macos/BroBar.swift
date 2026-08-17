@@ -631,101 +631,134 @@ final class BroBar: NSObject, NSApplicationDelegate {
         panel.toggle()
     }
 
-    /// What Vox's popover and its More… menu offered, as one menu. The panel's
-    /// waveform is not reproduced here because it was never only in the panel:
-    /// the floating HUD pill still draws it, and it is still Vox drawing it.
+    /// Two sections, every line self-explanatory. BRO on top: the same two
+    /// summons the global hotkeys fire, with those hotkeys printed on the
+    /// items so the menu doubles as the cheat sheet. VOX below the divider:
+    /// the plumbing, out of the way. There is no Wake, no Reply and no note
+    /// mailbox — bro is always awake, and "Talk to bro" goes straight through
+    /// bin/bro-talk to the inbox, so bro answers instead of collecting mail.
     private func showVoiceMenu() {
         let voice = vox.snapshot
         let menu = NSMenu()
+        menu.autoenablesItems = false
+        let keys = BroHotKey.load()
 
+        menu.addItem(header("BRO"))
+        let talk = item("Talk to bro", #selector(summonVoiceFromMenu), symbol: "mic.fill")
+        shortcut(talk, keys.first { $0.id == BroHotKey.voiceID })
+        menu.addItem(talk)
+        let type = item("Type to bro", #selector(summonTextFromMenu), symbol: "keyboard")
+        shortcut(type, keys.first { $0.id == BroHotKey.textID })
+        menu.addItem(type)
         if voice.reachable {
             if voice.state == "speaking" {
-                menu.addItem(item("Stop reading", #selector(voiceCancel)))
+                menu.addItem(item("Stop reading", #selector(voiceCancel), symbol: "stop.fill"))
             }
             if voice.micOpen {
-                menu.addItem(item("Stop listening — send what I said", #selector(voiceEndTurn)))
+                menu.addItem(item(
+                    "Stop listening — send what I said", #selector(voiceEndTurn), symbol: "mic.slash.fill"
+                ))
             }
-            let reply = voice.lastSpokenAgent.isEmpty
-                ? "Reply" : "Reply to \(voice.lastSpokenAgent)"
-            let replyItem = item(reply, #selector(voiceReply))
-            replyItem.isEnabled = voice.state == "idle" && !voice.micOpen
-            menu.addItem(replyItem)
-            menu.addItem(item("Repeat the last thing Vox said", #selector(voiceRepeat)))
+        }
 
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(header("VOX — voice engine"))
+        if voice.reachable {
             let modes = NSMenu()
+            modes.autoenablesItems = false
             for (name, label) in [("talk", "Talk"), ("narrate", "Narrate"), ("dictate", "Dictate")] {
                 let entry = item(label, #selector(voiceSetMode(_:)))
                 entry.representedObject = name
                 entry.state = voice.ioMode == name ? .on : .off
                 modes.addItem(entry)
             }
-            let modeItem = NSMenuItem(title: "Voice mode", action: nil, keyEquivalent: "")
+            let modeItem = item("Voice mode", nil, symbol: "waveform")
             modeItem.submenu = modes
             menu.addItem(modeItem)
 
-            let notes = NSMenu()
-            for agent in voice.agents {
-                let waiting = voice.notesWaiting.contains(agent)
-                let entry = item(waiting ? "\(agent)   ● note waiting" : agent, #selector(voiceNote(_:)))
-                entry.representedObject = agent
-                notes.addItem(entry)
-            }
-            if !voice.agents.isEmpty { notes.addItem(NSMenuItem.separator()) }
-            let anyAgent = item("Any agent (first to check)", #selector(voiceNote(_:)))
-            anyAgent.representedObject = ""
-            notes.addItem(anyAgent)
-            let noteItem = NSMenuItem(title: "Leave a note for…", action: nil, keyEquivalent: "")
-            noteItem.submenu = notes
-            noteItem.isEnabled = voice.state == "idle"
-            menu.addItem(noteItem)
-
-            menu.addItem(NSMenuItem.separator())
             switch voice.state {
             case "off", "offline", "error":
-                menu.addItem(item("Turn Vox on", #selector(voiceStart)))
+                menu.addItem(item("Turn Vox on", #selector(voiceStart), symbol: "power"))
             case "paused":
-                menu.addItem(item("Resume Vox", #selector(voiceResume)))
+                menu.addItem(item("Resume Vox", #selector(voiceResume), symbol: "play.fill"))
             default:
-                menu.addItem(item("Turn Vox off", #selector(voiceStop)))
+                menu.addItem(item("Turn Vox off", #selector(voiceStop), symbol: "power"))
             }
         } else {
-            let dead = NSMenuItem(
-                title: vox.everReachable ? "Vox is offline" : "Vox is not running",
-                action: nil,
-                keyEquivalent: ""
-            )
+            let dead = item(vox.everReachable ? "Vox is offline" : "Vox is not running", nil)
             dead.isEnabled = false
             menu.addItem(dead)
         }
 
-        menu.addItem(NSMenuItem.separator())
+        let more = NSMenu()
+        more.autoenablesItems = false
         // The escape hatch that makes hiding Vox's icon safe rather than final:
         // Vox's own item — and with it its panel, its restart control and
         // anything bro has not mirrored — is one click away, and comes back
         // within a second because the claim file is simply gone.
-        menu.addItem(item(
+        more.addItem(item(
             claimingStatusBar ? "Show Vox's own menu bar icon" : "Hide Vox's menu bar icon (bro shows it)",
             #selector(toggleStatusClaim)
         ))
-        menu.addItem(item("Open the Vox folder", #selector(openVoxFolder)))
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(item("Wake bro", #selector(wakeBroFromMenu)))
+        more.addItem(item("Open the Vox folder", #selector(openVoxFolder)))
+        let moreItem = item("More", nil, symbol: "ellipsis.circle")
+        moreItem.submenu = more
+        menu.addItem(moreItem)
 
-        for entry in menu.items where entry.action != nil { entry.target = self }
+        target(menu)
         // popUp, not statusItem.menu: assigning a menu would take the click away
         // from the action above, and the left-click end-turn would be gone.
         guard let button = statusItem.button else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
 
-    private func item(_ title: String, _ action: Selector) -> NSMenuItem {
-        NSMenuItem(title: title, action: action, keyEquivalent: "")
+    private func item(_ title: String, _ action: Selector?, symbol: String? = nil) -> NSMenuItem {
+        let entry = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        if let symbol, #available(macOS 11.0, *) {
+            entry.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        }
+        return entry
     }
+
+    /// A small-caps section label, native where the OS has one.
+    private func header(_ title: String) -> NSMenuItem {
+        if #available(macOS 14.0, *) { return NSMenuItem.sectionHeader(title: title) }
+        let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        entry.isEnabled = false
+        return entry
+    }
+
+    /// Print the global hotkey on the item, right-aligned the way every menu
+    /// does it — display only; the real registration is Carbon's, in
+    /// registerHotKeys, and honors the same hotkeys file overrides.
+    private func shortcut(_ entry: NSMenuItem, _ key: BroHotKey?) {
+        guard let key, let ch = key.label.last else { return }
+        entry.keyEquivalent = String(ch).lowercased()
+        var flags: NSEvent.ModifierFlags = []
+        if key.modifiers & UInt32(optionKey) != 0 { flags.insert(.option) }
+        if key.modifiers & UInt32(controlKey) != 0 { flags.insert(.control) }
+        if key.modifiers & UInt32(shiftKey) != 0 { flags.insert(.shift) }
+        if key.modifiers & UInt32(cmdKey) != 0 { flags.insert(.command) }
+        entry.keyEquivalentModifierMask = flags
+    }
+
+    /// Point every actionable item, submenus included, at self. The old
+    /// top-level-only loop worked by luck of the responder chain; submenu
+    /// items deserve better than luck.
+    private func target(_ menu: NSMenu) {
+        for entry in menu.items {
+            if entry.action != nil { entry.target = self }
+            if let sub = entry.submenu { target(sub) }
+        }
+    }
+
+    // The menu fires the exact same paths as the ⌥§ / ⌃§ hotkeys — one intent,
+    // one implementation, whichever way Ali reaches for it.
+    @objc private func summonVoiceFromMenu() { hotKeyFired(id: BroHotKey.voiceID) }
+    @objc private func summonTextFromMenu() { hotKeyFired(id: BroHotKey.textID) }
 
     @objc private func voiceCancel() { vox.send("cancel") }
     @objc private func voiceEndTurn() { vox.send("end_turn") }
-    @objc private func voiceRepeat() { vox.send("repeat") }
-    @objc private func voiceReply() { vox.send("reply") }
     @objc private func voiceStart() { vox.send("start") }
     @objc private func voiceResume() { vox.send("resume") }
     @objc private func voiceStop() { vox.send("stop") }
@@ -733,11 +766,6 @@ final class BroBar: NSObject, NSApplicationDelegate {
     @objc private func voiceSetMode(_ sender: NSMenuItem) {
         guard let mode = sender.representedObject as? String else { return }
         vox.send("set_mode", extra: ["mode": mode])
-    }
-
-    @objc private func voiceNote(_ sender: NSMenuItem) {
-        let target = (sender.representedObject as? String) ?? ""
-        vox.send("note", extra: target.isEmpty ? [:] : ["target_agent": target])
     }
 
     @objc private func toggleStatusClaim() {
@@ -750,26 +778,12 @@ final class BroBar: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(BroPaths.voxHome)
     }
 
-    @objc private func wakeBroFromMenu() { wakeBro() }
-
     func applicationWillTerminate(_ notification: Notification) {
         // Best effort only. A SIGTERM or a crash never reaches this, which is
         // exactly why the claim carries a pid: Vox checks the claimant is alive.
         _ = StatusHostClaim.release()
     }
 
-    private func wakeBro() {
-        let wake = BroPaths.wake
-        guard FileManager.default.isExecutableFile(atPath: wake.path) else { return }
-        let task = Process()
-        task.executableURL = wake
-        task.arguments = ["menubar"]
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        // Detached and unwaited: a wake that hangs or fails must never stall
-        // the menu bar.
-        try? task.run()
-    }
 }
 // The entry point lives in macos/main.swift: once this app is more than one
 // file, Swift only allows top-level statements there.
