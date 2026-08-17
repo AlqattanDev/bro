@@ -186,10 +186,12 @@ final class BroPanel {
     private static let width: CGFloat = 520
     private static let inset: CGFloat = 16
     private static let minHeight: CGFloat = 90
+    private static let footerHeight: CGFloat = 40
 
     private let panel: AnswerPanel
     private let scroll = NSScrollView()
     private let textView = NSTextView()
+    private let talkButton = NSButton(title: "Talk", target: nil, action: nil)
     private var timer: Timer?
     private var escMonitors: [Any] = []
     /// Last (state, content stamp) acted on, so the poll costs one stat call
@@ -243,9 +245,23 @@ final class BroPanel {
         scroll.autohidesScrollers = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
+        talkButton.bezelStyle = .rounded
+        talkButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        talkButton.target = self
+        talkButton.action = #selector(talk)
+        talkButton.refusesFirstResponder = true
+        talkButton.toolTip = "Open the mic"
+        talkButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let footer = NSView()
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        footer.addSubview(talkButton)
+
         blur.addSubview(scroll)
+        blur.addSubview(footer)
+        // Dismiss is the text, not the whole card — Talk has to stay clickable.
         let click = NSClickGestureRecognizer(target: self, action: #selector(clicked))
-        blur.addGestureRecognizer(click)
+        scroll.addGestureRecognizer(click)
 
         let root = NSView()
         root.addSubview(blur)
@@ -259,10 +275,26 @@ final class BroPanel {
             scroll.leadingAnchor.constraint(equalTo: blur.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: blur.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: blur.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: blur.bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
+            footer.leadingAnchor.constraint(equalTo: blur.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: blur.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: blur.bottomAnchor),
+            footer.heightAnchor.constraint(equalToConstant: BroPanel.footerHeight),
+            talkButton.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 12),
+            talkButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
         ])
         panel.contentView = root
         panel.alphaValue = 0
+    }
+
+    /// Menu-bar click. Writes the same file `bro-show --toggle` does, so the
+    /// poll — not a second show path — is what puts the panel on screen.
+    func toggle() {
+        try? FileManager.default.createDirectory(
+            at: BroPaths.showDir, withIntermediateDirectories: true
+        )
+        let next = shownState ? "closed\n" : "open\n"
+        try? next.write(to: BroPaths.showState, atomically: true, encoding: .utf8)
     }
 
     func start() {
@@ -314,6 +346,7 @@ final class BroPanel {
             height = layout.usedRect(for: container).height + 30
         }
         height = min(max(height, BroPanel.minHeight), visible.height * 0.66)
+        height += BroPanel.footerHeight
         panel.setFrame(
             NSRect(
                 x: visible.maxX - BroPanel.width - BroPanel.inset,
@@ -370,6 +403,10 @@ final class BroPanel {
 
     @objc private func clicked() {
         dismiss()
+    }
+
+    @objc private func talk() {
+        BroSummon.run(["voice"])
     }
 
     /// Esc. A borderless non-key panel never receives keystrokes itself, so the
