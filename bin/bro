@@ -7,7 +7,8 @@
 #   bro quiet | call | ping status current mode
 #   bro snapshot            force-read your screen into watch files
 #   bro read                print what I would see (latest snapshot)
-#   bro stop                kill the session
+#   bro stop                stop everything on purpose (detaching does not)
+#   bro daemon ...          launchd LaunchAgent that owns the headless backend
 #   bro backend [grok|claude|codex]
 #   bro help
 set -euo pipefail
@@ -47,7 +48,9 @@ bro — full-screen work + hidden agent + clean board
   bro backend claude               Set default backend (saved)
   bro snapshot                     Save your pane for bro
   bro read                         Print latest snapshot
-  bro stop                         End session
+  bro stop                         End everything (daemon, loops, bar, session)
+  bro daemon install|uninstall     Run the backend at login under launchd
+  bro daemon status|restart        (install is explicit — never automatic)
   bro help
 
 Keys:
@@ -116,6 +119,21 @@ stop_bro_bar() {
   fi
 }
 
+stop_daemon() {
+  # Only a deliberate `bro stop` gets here. Detaching (Ctrl-a d, closing the
+  # window) never runs this, which is the whole point of Phase 4.
+  local d="$BRO_HOME/bin/bro-daemon"
+  if [[ -x "$d" ]]; then
+    "$d" stop >/dev/null 2>&1 || true
+    return 0
+  fi
+  local pidfile="$BRO_HOME/daemon.pid"
+  if [[ -f "$pidfile" ]]; then
+    kill "$(cat "$pidfile")" 2>/dev/null || true
+    rm -f "$pidfile"
+  fi
+}
+
 stop_watch_loop() {
   local pidfile="$WATCH/watch.pid"
   if [[ -f "$pidfile" ]]; then
@@ -129,12 +147,26 @@ stop_watch_loop() {
   fi
 }
 
-create_session() {
+backend_up() {
+  # Everything bro *is* without a terminal: the loops, the menu bar face, and
+  # the detached tmux session holding the hidden backend. Safe to call over and
+  # over — every start is pidfile-guarded — which is what lets the daemon
+  # supervise it and a terminal merely join it.
   ensure_dirs
+  # If Ali installed the LaunchAgent and something booted it out (a deliberate
+  # `bro stop`, say), put launchd back in charge. Never installs anything.
+  if [[ -z "${BRO_DAEMON:-}" && -x "$BRO_HOME/bin/bro-daemon" ]]; then
+    "$BRO_HOME/bin/bro-daemon" ensure >/dev/null 2>&1 || true
+  fi
   start_watch_loop
   start_status_loop
   start_bro_bar
+  if ! "${TMUXC[@]}" has-session -t "$SESSION" 2>/dev/null; then
+    create_session
+  fi
+}
 
+create_session() {
   # Window "you": full work surface
   "${TMUXC[@]}" new-session -d -s "$SESSION" -n you \
     "export BRO_HOME='$BRO_HOME'; export BRO_SESSION='$SESSION'; export BRO_TMUX_SOCKET='$BRO_TMUX_SOCKET'; cd '${BRO_START_DIR:-$HOME}'; exec ${SHELL:-/bin/zsh} -i"
@@ -154,15 +186,18 @@ create_session() {
 
 case "$cmd" in
   ""|start|attach)
-    ensure_dirs
-    if ! "${TMUXC[@]}" has-session -t "$SESSION" 2>/dev/null; then
-      create_session
-    else
-      start_watch_loop
-      start_status_loop
-      start_bro_bar
-    fi
+    # A terminal is a client. It brings the backend up if nobody else has, then
+    # attaches; when it detaches or the window is closed, the backend stays.
+    backend_up
     exec "${TMUXC[@]}" attach -t "$SESSION"
+    ;;
+  backend-up)
+    # Headless: bring the backend up, attach nothing. What the daemon calls.
+    backend_up
+    ;;
+  daemon)
+    shift
+    exec "$BRO_HOME/bin/bro-daemon" "${@:-status}"
     ;;
   -h|--help|help)
     usage
@@ -213,6 +248,7 @@ case "$cmd" in
     fi
     ;;
   stop)
+    stop_daemon
     stop_watch_loop
     stop_bro_bar
     "${TMUXC[@]}" kill-session -t "$SESSION" 2>/dev/null || true

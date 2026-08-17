@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.bro.backend</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/ali/.bro/bin/bro-daemon</string>
+		<string>run</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>BRO_HOME</key>
+		<string>/Users/ali/.bro</string>
+		<key>BRO_SESSION</key>
+		<string>bro</string>
+		<key>BRO_TMUX_SOCKET</key>
+		<string>bro</string>
+		<key>PATH</key>
+		<string>/Users/ali/.bro/bin:/Users/ali/.grok/bin:/Users/ali/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>WorkingDirectory</key>
+	<string>/Users/ali</string>
+	<key>StandardOutPath</key>
+	<string>/Users/ali/.bro/logs/daemon.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/ali/.bro/logs/daemon.err.log</string>
+</dict>
+</plist>

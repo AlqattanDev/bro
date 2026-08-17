@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# bro-daemon — the backend's owner.
+#
+# Phase 4: the backend (hidden Grok session + watch/status loops + BroBar) is
+# no longer owned by whatever terminal happened to start it. This script is the
+# thing launchd runs at login; the terminal is a client that attaches.
+#
+#   bro-daemon run          supervise the backend in the foreground (launchd)
+#   bro-daemon install      write the LaunchAgent and bootstrap it (explicit!)
+#   bro-daemon uninstall    bootout and remove the LaunchAgent
+#   bro-daemon status       installed / loaded / running
+#   bro-daemon restart      kickstart the agent (or restart a local supervisor)
+#   bro-daemon stop         deliberate stop: bootout + kill the supervisor
+#   bro-daemon plist        print the LaunchAgent XML for this BRO_HOME
+#
+# Nothing here runs as a side effect of `bro`. Installing a login item is Ali's
+# explicit choice, so it takes an explicit command.
+set -euo pipefail
+
+export BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+export BRO_SESSION="${BRO_SESSION:-bro}"
+export BRO_TMUX_SOCKET="${BRO_TMUX_SOCKET:-bro}"
+export PATH="$BRO_HOME/bin:$PATH"
+
+LABEL="${BRO_DAEMON_LABEL:-com.bro.backend}"
+AGENTS_DIR="${BRO_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
+PLIST="$AGENTS_DIR/$LABEL.plist"
+DOMAIN="gui/$(id -u)"
+PIDFILE="$BRO_HOME/daemon.pid"
+
+usage() {
+  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# ---------------------------------------------------------------- plist -----
+
+emit_plist() {
+  local bro_home="$BRO_HOME"
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>$LABEL</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>$bro_home/bin/bro-daemon</string>
+		<string>run</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>BRO_HOME</key>
+		<string>$bro_home</string>
+		<key>BRO_SESSION</key>
+		<string>bro</string>
+		<key>BRO_TMUX_SOCKET</key>
+		<string>bro</string>
+		<key>PATH</key>
+		<string>$bro_home/bin:$HOME/.grok/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>WorkingDirectory</key>
+	<string>$HOME</string>
+	<key>StandardOutPath</key>
+	<string>$bro_home/logs/daemon.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>$bro_home/logs/daemon.err.log</string>
+</dict>
+</plist>
+EOF
+}
+
+# ------------------------------------------------------------ supervise -----
+
+alive() {
+  local pidfile="$1"
+  [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null
+}
+
+shutdown_clean() {
+  # A TERM (bootout, logout, `bro stop`) is a deliberate stop, so exit 0 and
+  # let KeepAlive/SuccessfulExit=false keep launchd from bringing us back.
+  rm -f "$PIDFILE"
+  exit 0
+}
+
+run() {
+  mkdir -p "$BRO_HOME/logs"
+  if alive "$PIDFILE" && [[ "$(cat "$PIDFILE")" != "$$" ]]; then
+    echo "bro-daemon already running (pid $(cat "$PIDFILE"))" >&2
+    exit 0
+  fi
+  echo $$ >"$PIDFILE"
+  trap shutdown_clean TERM INT
+  export BRO_DAEMON=1
+  local interval="${BRO_DAEMON_INTERVAL:-5}"
+  while true; do
+    "$BRO_HOME/bin/bro" backend-up >>"$BRO_HOME/logs/daemon.log" 2>&1 || true
+    # Sleep in the background and wait, so a signal lands immediately instead
+    # of at the end of the interval.
+    sleep "$interval" &
+    wait $! || true
+  done
+}
+
+# ---------------------------------------------------------------- launchd ---
+
+loaded() {
+  launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1
+}
+
+do_install() {
+  mkdir -p "$AGENTS_DIR" "$BRO_HOME/logs"
+  emit_plist >"$PLIST"
+  plutil -lint "$PLIST" >/dev/null
+  if loaded; then
+    launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+  fi
+  launchctl bootstrap "$DOMAIN" "$PLIST"
+  echo "installed $LABEL -> $PLIST"
+}
+
+do_uninstall() {
+  if loaded; then
+    launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+  fi
+  rm -f "$PLIST"
+  echo "uninstalled $LABEL"
+}
+
+do_restart() {
+  if loaded; then
+    launchctl kickstart -k "$DOMAIN/$LABEL"
+    echo "restarted $LABEL"
+    return 0
+  fi
+  if [[ -f "$PLIST" ]]; then
+    launchctl bootstrap "$DOMAIN" "$PLIST"
+    echo "bootstrapped $LABEL"
+    return 0
+  fi
+  echo "$LABEL is not installed — run: bro daemon install" >&2
+  return 1
+}
+
+do_stop() {
+  # Deliberate stop of the supervisor only. `bro stop` calls this first and
+  # then tears the session and loops down itself.
+  if loaded; then
+    launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+  fi
+  if [[ -f "$PIDFILE" ]]; then
+    local pid
+    pid="$(cat "$PIDFILE")"
+    kill "$pid" 2>/dev/null || true
+    # Wait for it to actually go: it may be mid-cycle starting a loop, and the
+    # caller is about to kill those loops by pidfile.
+    for _ in $(seq 1 40); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.05
+    done
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PIDFILE"
+  fi
+}
+
+do_ensure() {
+  # Cheap, silent, no-op unless Ali already installed the agent: if the plist
+  # is there but launchd is not holding it (e.g. after a deliberate `bro stop`),
+  # put it back. Never writes a plist, so it can never install anything.
+  [[ -f "$PLIST" ]] || return 0
+  loaded && return 0
+  launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+}
+
+do_status() {
+  if [[ -f "$PLIST" ]]; then
+    echo "plist: installed ($PLIST)"
+  else
+    echo "plist: not installed"
+  fi
+  if loaded; then
+    echo "launchd: loaded ($DOMAIN/$LABEL)"
+  else
+    echo "launchd: not loaded"
+  fi
+  if alive "$PIDFILE"; then
+    echo "supervisor: running (pid $(cat "$PIDFILE"))"
+  else
+    echo "supervisor: not running"
+  fi
+}
+
+case "${1:-status}" in
+  run)        run ;;
+  install)    do_install ;;
+  uninstall)  do_uninstall ;;
+  restart)    do_restart ;;
+  stop)       do_stop ;;
+  ensure)     do_ensure ;;
+  status)     do_status ;;
+  plist)      emit_plist ;;
+  -h|--help|help) usage ;;
+  *)
+    echo "usage: bro-daemon run|install|uninstall|status|restart|stop|ensure|plist" >&2
+    exit 2
+    ;;
+esac

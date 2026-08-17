@@ -141,6 +141,130 @@ done
 kill -0 "$bar_pid" 2>/dev/null && fail "bro stop kills BroBar"
 pass "bro starts BroBar when built, skips it when not, and stop kills it"
 
+# Phase 4: the backend belongs to a launchd daemon, not to a terminal.
+DAEMON_HOME="$TMP/daemon-home"
+AGENTS="$TMP/LaunchAgents"
+mkdir -p "$DAEMON_HOME/bin" "$DAEMON_HOME/logs" "$DAEMON_HOME/watch" "$AGENTS"
+cp "$ROOT/bin/bro" "$ROOT/bin/bro-daemon" "$DAEMON_HOME/bin/"
+cat >"$DAEMON_HOME/bin/bro-watch-loop" <<'EOF'
+#!/usr/bin/env bash
+while true; do sleep 10; done
+EOF
+cp "$DAEMON_HOME/bin/bro-watch-loop" "$DAEMON_HOME/bin/bro-status-loop"
+cat >"$DAEMON_HOME/bin/bro-snapshot" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+mkdir -p "$DAEMON_HOME/dist/BroBar.app/Contents/MacOS"
+cp "$DAEMON_HOME/bin/bro-watch-loop" "$DAEMON_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
+chmod +x "$DAEMON_HOME/bin/"* "$DAEMON_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
+
+# The plist we ship must be exactly what the installer writes, and valid.
+plutil -lint "$ROOT/com.bro.backend.plist" >/dev/null || fail "shipped plist is well-formed"
+BRO_HOME="$ROOT" "$ROOT/bin/bro-daemon" plist >"$TMP/generated.plist"
+plutil -lint "$TMP/generated.plist" >/dev/null || fail "generated plist is well-formed"
+diff -q "$TMP/generated.plist" "$ROOT/com.bro.backend.plist" >/dev/null \
+  || fail "shipped plist matches what bro-daemon generates"
+grep -q '<string>run</string>' "$ROOT/com.bro.backend.plist" || fail "plist runs the daemon supervisor"
+grep -q 'SuccessfulExit' "$ROOT/com.bro.backend.plist" || fail "plist keeps the backend alive on crash only"
+grep -q '<key>RunAtLoad</key>' "$ROOT/com.bro.backend.plist" || fail "plist starts the backend at login"
+
+# install / uninstall / restart drive launchctl, and only through the gui domain.
+cat >"$TMP/bin/launchctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_LAUNCHCTL_LOG"
+case "$1" in
+  print) [[ -f "$FAKE_LOADED" ]] || exit 1 ;;
+  bootstrap) : >"$FAKE_LOADED" ;;
+  bootout) rm -f "$FAKE_LOADED" ;;
+esac
+exit 0
+EOF
+chmod +x "$TMP/bin/launchctl"
+: >"$TMP/launchctl.log"
+rm -f "$TMP/loaded"
+daemon_env=(PATH="$TMP/bin:$PATH" BRO_HOME="$DAEMON_HOME" BRO_LAUNCH_AGENTS="$AGENTS"
+  FAKE_LAUNCHCTL_LOG="$TMP/launchctl.log" FAKE_LOADED="$TMP/loaded")
+# Nothing is installed until asked: running bro must never write a login item.
+env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" backend-up
+[[ ! -e "$AGENTS/com.bro.backend.plist" ]] || fail "running bro installs no LaunchAgent by itself"
+[[ ! -s "$TMP/launchctl.log" ]] || fail "running bro touches launchctl by itself"
+daemon_status="$(env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" daemon status)"
+grep -q 'plist: not installed' <<<"$daemon_status" || fail "status reports an uninstalled agent"
+grep -q 'launchd: not loaded' <<<"$daemon_status" || fail "status reports an unloaded agent"
+env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" daemon install >/dev/null
+[[ -f "$AGENTS/com.bro.backend.plist" ]] || fail "install writes the LaunchAgent plist"
+plutil -lint "$AGENTS/com.bro.backend.plist" >/dev/null || fail "installed plist is well-formed"
+grep -q "^bootstrap gui/$(id -u) $AGENTS/com.bro.backend.plist$" "$TMP/launchctl.log" \
+  || fail "install bootstraps the gui domain"
+daemon_status="$(env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" daemon status)"
+grep -q 'launchd: loaded' <<<"$daemon_status" || fail "status reports a loaded agent"
+grep -q 'plist: installed' <<<"$daemon_status" || fail "status reports an installed plist"
+: >"$TMP/launchctl.log"
+env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" daemon restart >/dev/null
+grep -q "^kickstart -k gui/$(id -u)/com.bro.backend$" "$TMP/launchctl.log" \
+  || fail "restart kickstarts the loaded agent"
+: >"$TMP/launchctl.log"
+env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" daemon uninstall >/dev/null
+grep -q "^bootout gui/$(id -u)/com.bro.backend$" "$TMP/launchctl.log" \
+  || fail "uninstall boots the agent out of the gui domain"
+[[ ! -e "$AGENTS/com.bro.backend.plist" ]] || fail "uninstall removes the plist"
+pass "bro daemon installs, restarts and removes the LaunchAgent without bro ever doing it for you"
+
+# The daemon owns the backend: detaching a terminal leaves it standing, and only
+# `bro stop` takes it down.
+cat >"$TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$TMP/bin/tmux"
+env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" stop >/dev/null
+: >"$TMP/launchctl.log"
+rm -f "$DAEMON_HOME/watch/watch.pid" "$DAEMON_HOME/status-loop.pid" "$DAEMON_HOME/bro-bar.pid"
+env "${daemon_env[@]}" BRO_DAEMON_INTERVAL=0.2 "$DAEMON_HOME/bin/bro-daemon" run &
+daemon_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -s "$DAEMON_HOME/bro-bar.pid" ]] && break
+  sleep 0.2
+done
+[[ -f "$DAEMON_HOME/daemon.pid" ]] || fail "daemon records its own pid"
+d_status_pid="$(cat "$DAEMON_HOME/status-loop.pid")"
+d_bar_pid="$(cat "$DAEMON_HOME/bro-bar.pid")"
+kill -0 "$d_status_pid" 2>/dev/null || fail "daemon starts the status loop headlessly"
+kill -0 "$d_bar_pid" 2>/dev/null || fail "daemon starts BroBar headlessly"
+# A terminal attaching is a client: it reuses what the daemon already runs.
+env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" attach
+[[ "$(cat "$DAEMON_HOME/bro-bar.pid")" == "$d_bar_pid" ]] || fail "a terminal reuses the daemon's BroBar"
+[[ "$(cat "$DAEMON_HOME/status-loop.pid")" == "$d_status_pid" ]] || fail "a terminal reuses the daemon's loops"
+# ...and that terminal exiting (detach, closed window) tears nothing down.
+sleep 0.4
+kill -0 "$daemon_pid" 2>/dev/null || fail "detaching a terminal leaves the daemon running"
+kill -0 "$d_status_pid" 2>/dev/null || fail "detaching a terminal leaves the loops running"
+kill -0 "$d_bar_pid" 2>/dev/null || fail "detaching a terminal leaves BroBar running"
+# The daemon also puts back what dies under it.
+kill "$d_status_pid"
+wait "$d_status_pid" 2>/dev/null || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ "$(cat "$DAEMON_HOME/status-loop.pid")" != "$d_status_pid" ]] && break
+  sleep 0.2
+done
+new_status_pid="$(cat "$DAEMON_HOME/status-loop.pid")"
+[[ "$new_status_pid" != "$d_status_pid" ]] || fail "daemon replaces a dead status loop"
+kill -0 "$new_status_pid" 2>/dev/null || fail "daemon's replacement status loop is alive"
+# bro stop is the deliberate kill: daemon, loops, bar, and launchd's grip.
+env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" stop >/dev/null
+wait "$daemon_pid" 2>/dev/null || true
+kill -0 "$daemon_pid" 2>/dev/null && fail "bro stop stops the daemon"
+[[ ! -e "$DAEMON_HOME/daemon.pid" ]] || fail "bro stop clears the daemon pidfile"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  kill -0 "$(cat "$DAEMON_HOME/watch/watch.pid" 2>/dev/null || echo 1)" 2>/dev/null || break
+  sleep 0.1
+done
+kill -0 "$new_status_pid" 2>/dev/null && fail "bro stop stops the status loop"
+kill -0 "$d_bar_pid" 2>/dev/null && fail "bro stop stops BroBar"
+[[ ! -e "$DAEMON_HOME/bro-bar.pid" ]] || fail "bro stop clears the bar pidfile"
+pass "the daemon owns the backend, a terminal detaching leaves it up, and bro stop takes it down"
+
 QUEUE_HOME="$TMP/queue-home"
 mkdir -p "$QUEUE_HOME/bin"
 cp "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-wake" "$QUEUE_HOME/bin/"

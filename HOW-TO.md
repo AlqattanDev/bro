@@ -15,6 +15,23 @@ New terminal:
 bro
 ```
 
+## Always on (optional, one time)
+
+Bro can run without any terminal at all — hidden backend, loops and menu bar
+face owned by a launchd agent that comes back after a reboot:
+
+```bash
+bro daemon install     # writes ~/Library/LaunchAgents/com.bro.backend.plist
+bro daemon status      # installed? loaded? running?
+bro daemon restart
+bro daemon uninstall
+```
+
+Installing a login item is a deliberate choice, so `bro` never does it for you.
+Once installed, a terminal is just a client: `bro` attaches, and detaching
+(Ctrl-a d, or closing the window) leaves bro running. Only `bro stop` takes the
+whole thing down.
+
 ## Keys
 
 | Key | What |
