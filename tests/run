@@ -994,3 +994,32 @@ if doc_stale="$(PATH="$TMP/bin:$PATH" BRO_HOME="$DOC_HOME" BRO_TMUX_SOCKET=bro-d
 fi
 grep -q 'claimed but never finished' <<<"$doc_stale" || fail "doctor did not flag the stale claim"
 pass "bro-doctor checks the whole machine story and fails loudly with the fix attached"
+
+# The bar tells the whole truth: queue depth is counted the way
+# bin/bro-queue-count spells it, and BroBar renders depth, cause, and what's
+# next instead of a bare word.
+QC_HOME="$TMP/qc-home"
+mkdir -p "$QC_HOME/inbox/pending"
+[[ "$(BRO_HOME="$QC_HOME" "$ROOT/bin/bro-queue-count")" == 0 ]] \
+  || fail "an empty queue did not count as 0"
+touch "$QC_HOME/inbox/pending/a.md" "$QC_HOME/inbox/pending/b.md"
+touch "$QC_HOME/inbox/pending/not-a-note.txt"
+[[ "$(BRO_HOME="$QC_HOME" "$ROOT/bin/bro-queue-count")" == 2 ]] \
+  || fail "two notes and a stray file did not count as 2"
+# No inbox at all is 0, not an error.
+[[ "$(BRO_HOME="$TMP/qc-nowhere" "$ROOT/bin/bro-queue-count")" == 0 ]] \
+  || fail "a missing inbox did not count as 0"
+BAR="$ROOT/macos/BroBar.swift"
+grep -q 'queueSuffix' "$BAR" || fail "BroBar has no queue-depth suffix"
+grep -q 'inbox/pending' "$BAR" || fail "BroBar does not count the pending queue"
+grep -q 'downCause' "$BAR" || fail "BroBar has no down-cause tooltip"
+grep -q '0xd19a66' "$BAR" || fail "BroBar has no nudge colour"
+grep -q 'backend.log' "$BAR" || fail "the down tooltip does not read the backend log"
+grep -q 'next-reminder' "$BAR" || fail "BroBar does not show the next reminder"
+# The tmux status line speaks nudge too, in the same palette as the bar.
+printf 'nudge\n' >"$TMP/home/state/status-word"
+BRO_HOME="$TMP/home" "$TMP/home/bin/bro-status-paint"
+grep -q '#d19a66' "$TMP/home/state/status-line" || fail "the tmux paint has no nudge colour"
+grep -q 'nudge' "$TMP/home/state/status-line" || fail "the tmux paint drops the nudge word"
+printf 'ready\n' >"$TMP/home/state/status-word"
+pass "the bar shows queue depth, down causes, nudges, and what is next"

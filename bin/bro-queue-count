@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# How many asks are waiting for the backend. One directory listing, one number.
+# BroBar reads this through a shell tool — like every control file — so the
+# rule the compiled app renders is one tests/run can prove.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+PENDING="$BRO_HOME/inbox/pending"
+
+[[ -d "$PENDING" ]] || { echo 0; exit 0; }
+find "$PENDING" -type f -name '*.md' | wc -l | tr -d ' '

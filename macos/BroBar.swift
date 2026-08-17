@@ -36,6 +36,17 @@ enum BroPaths {
     static var statusWordLegacy: URL { home.appendingPathComponent("status-word") }
     static var mode: URL { state.appendingPathComponent("mode") }
     static var modeLegacy: URL { home.appendingPathComponent("mode") }
+    /// Which agent is behind all of this (grok/claude/codex) — tooltip only.
+    static var backend: URL { state.appendingPathComponent("backend") }
+    /// The next thing bro will speak up about, maintained by bin/bro-remind.
+    /// One small file, so the twice-a-second poll never scans a directory.
+    static var nextReminder: URL { state.appendingPathComponent("next-reminder") }
+    /// Asks waiting for the backend. Counted here by directory listing, which
+    /// is exactly what bin/bro-queue-count does — that script is the canonical,
+    /// tested spelling of the same rule.
+    static var inboxPending: URL { home.appendingPathComponent("inbox/pending") }
+    /// Where a "down" tooltip finds its cause (last line is the why).
+    static var backendLog: URL { home.appendingPathComponent("logs/backend.log") }
     static var wake: URL { home.appendingPathComponent("bin/bro-wake") }
     static var hotkeysTool: URL { home.appendingPathComponent("bin/bro-hotkeys") }
     static var statusHostTool: URL { home.appendingPathComponent("bin/bro-status-host") }
@@ -286,6 +297,7 @@ func color(for word: String) -> NSColor {
     case "speaking": return NSColor(hex: 0xc678dd)
     case "listening": return NSColor(hex: 0x61afef)
     case "down": return NSColor(hex: 0xe06c75)
+    case "nudge": return NSColor(hex: 0xd19a66)
     case "ready": return NSColor(hex: 0x7dcea0)
     default: return NSColor(hex: 0xaaaaaa)
     }
@@ -330,10 +342,13 @@ final class BroBar: NSObject, NSApplicationDelegate {
     /// Flipped from the menu, so the full Vox panel is always one click away.
     private var claimingStatusBar = false
     /// Last rendered state. The status item is only touched when this changes,
-    /// so the common case — nothing happening — costs two file reads.
+    /// so the common case — nothing happening — costs a few small file reads.
     private struct Rendered: Equatable {
         var word: String
         var mode: String
+        var queueDepth: Int
+        var backend: String
+        var nextReminder: String
         var vox: VoxSnapshot
     }
     private var rendered: Rendered?
@@ -368,8 +383,14 @@ final class BroBar: NSObject, NSApplicationDelegate {
     private func render() {
         let word = readWord(BroPaths.statusWord, legacy: BroPaths.statusWordLegacy, fallback: "ready")
         let mode = readWord(BroPaths.mode, legacy: BroPaths.modeLegacy, fallback: "call")
+        let depth = queueDepth()
+        let backend = readWord(BroPaths.backend, fallback: "")
+        let reminder = readWord(BroPaths.nextReminder, fallback: "")
         let voice = vox.snapshot
-        let next = Rendered(word: word, mode: mode, vox: voice)
+        let next = Rendered(
+            word: word, mode: mode, queueDepth: depth,
+            backend: backend, nextReminder: reminder, vox: voice
+        )
         if rendered == next { return }
         rendered = next
 
@@ -382,7 +403,7 @@ final class BroBar: NSObject, NSApplicationDelegate {
             ]
         )
         title.append(NSAttributedString(
-            string: prefix(for: mode) + word,
+            string: prefix(for: mode) + word + queueSuffix(depth, word: word),
             attributes: [
                 .foregroundColor: NSColor.labelColor,
                 .font: NSFont.menuBarFont(ofSize: 0),
@@ -391,7 +412,39 @@ final class BroBar: NSObject, NSApplicationDelegate {
         button.attributedTitle = title
         button.image = voiceGlyph(voice)
         button.imagePosition = button.image == nil ? .noImage : .imageLeading
-        button.toolTip = tooltip(word: word, mode: mode, vox: voice)
+        button.toolTip = tooltip(
+            word: word, mode: mode, depth: depth,
+            backend: backend, reminder: reminder, vox: voice
+        )
+    }
+
+    /// bin/bro-queue-count, counted in place: *.md files in inbox/pending.
+    private func queueDepth() -> Int {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: BroPaths.inboxPending.path)
+        else { return 0 }
+        return entries.filter { $0.hasSuffix(".md") }.count
+    }
+
+    /// "working ²" when asks are stacked behind the one in flight. Nothing when
+    /// the queue is one deep — a single pending ask is the normal state.
+    private func queueSuffix(_ depth: Int, word: String) -> String {
+        guard word == "working", depth > 1 else { return "" }
+        let superscripts = ["", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹"]
+        return " " + (depth <= 9 ? superscripts[depth] : "⁹⁺")
+    }
+
+    /// The last thing the backend log said, for a "down" tooltip. Reads at most
+    /// the tail of the file, and only while the word is down.
+    private func downCause() -> String {
+        guard let handle = try? FileHandle(forReadingFrom: BroPaths.backendLog)
+        else { return "" }
+        defer { try? handle.close() }
+        let end = handle.seekToEndOfFile()
+        handle.seek(toFileOffset: end > 2048 ? end - 2048 : 0)
+        let text = String(data: handle.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return text.components(separatedBy: .newlines)
+            .last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }?
+            .trimmingCharacters(in: .whitespaces) ?? ""
     }
 
     /// The half of Vox's icon that bro's word cannot say.
@@ -435,18 +488,30 @@ final class BroBar: NSObject, NSApplicationDelegate {
     /// Vox's tooltips, kept word for word where they were about the microphone —
     /// they are the sentence that tells you the mic is open and that a click
     /// closes it.
-    private func tooltip(word: String, mode: String, vox: VoxSnapshot) -> String {
+    private func tooltip(word: String, mode: String, depth: Int,
+                         backend: String, reminder: String, vox: VoxSnapshot) -> String {
         let detail = voiceDetail(vox)
         let head: String
         if vox.bargeIn {
             head = "Mic is LIVE while Vox speaks — just start talking to interrupt."
         } else if vox.micOpen {
             head = "Mic is LIVE — click to stop listening."
+        } else if word == "down" {
+            let cause = downCause()
+            head = cause.isEmpty
+                ? "bro — backend is down. Run: bro doctor."
+                : "bro — backend is down: \(cause)"
+        } else if word == "working", depth > 1 {
+            head = "bro — working, \(depth) asks queued."
         } else {
             head = "bro — \(prefix(for: mode))\(word). Click to open the panel."
         }
+        var extras: [String] = []
+        if !backend.isEmpty { extras.append("backend: \(backend)") }
+        if !reminder.isEmpty { extras.append("next: \(reminder)") }
+        let extraText = extras.isEmpty ? "" : " [\(extras.joined(separator: " · "))]"
         let voiceLine = detail.isEmpty ? "" : " \(detail)"
-        return head + voiceLine + " Right-click for voice controls."
+        return head + voiceLine + extraText + " Right-click for voice controls."
     }
 
     /// Vox's panelDetail(), which is what its tooltip appended.
