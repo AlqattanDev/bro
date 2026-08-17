@@ -10,9 +10,9 @@ export PATH="$HOME/.grok/bin:/opt/homebrew/bin:$HOME/.local/bin:$BRO_HOME/bin:$P
 cd "${BRO_START_DIR:-$HOME}"
 
 BACKEND="${BRO_BACKEND:-grok}"
-# Allow file override: ~/.bro/backend (one word)
-if [[ -f "$BRO_HOME/backend" ]]; then
-  BACKEND="$(tr -d '[:space:]' <"$BRO_HOME/backend")"
+# Allow file override: ~/.bro/state/backend (one word)
+if [[ -f "$BRO_HOME/state/backend" ]]; then
+  BACKEND="$(tr -d '[:space:]' <"$BRO_HOME/state/backend")"
 fi
 
 PROMPT_FILE="$BRO_HOME/bro-boot-prompt.txt"
@@ -51,7 +51,7 @@ How the product works:
   what is on their display. Still exactly one capture per ask.
 - SCREEN PRIVACY (permanent): only capture the screen when the user just asked,
   or when they pressed F3. Never on a schedule, never "to keep context fresh",
-  never before they ask. One ask = one capture. Honour ~/.bro/show-policy: if it
+  never before they ask. One ask = one capture. Honour ~/.bro/state/show-policy: if it
   says no-screen/off, do not capture at all, say so instead.
 - TWO OUTPUT CHANNELS:
   1) TERMINAL ACTIONS — run / list / check something:
@@ -64,7 +64,7 @@ How the product works:
        EOF
      Floating panel (F1 toggles it) that sits over whatever app they are in. Not a chat dump. Next show replaces the old one.
 - BOARD POLICY (permanent):
-  - Default is ask-only. Read ~/.bro/show-policy if present.
+  - Default is ask-only. Read ~/.bro/state/show-policy if present.
   - Use bro-show ONLY when the user asks to see something, or when they asked for a plan.
   - Do NOT open the board for recaps, step trackers, "what I just did", or unsolicited teaching.
   - If you already opened one by mistake, bro-show --close.
@@ -75,7 +75,7 @@ How the product works:
   First line is the overall speaker. If a timeline= line is present, use it: they talked in that order.
   If it prints unknown, do not guess. Toggle: `bro speakers off` / `bro speakers on`. Enroll: `bro-speakers enroll NAME [wav]`.
 - Co-pilot, not main coder.
-- Talk modes (file ~/.bro/mode): call = voice keep-going; ping = one voice reply then silent; quiet = no TTS, answers on F1 only (quiet is the exception where the board is the answer).
+- Talk modes (file ~/.bro/state/mode): call = voice keep-going; ping = one voice reply then silent; quiet = no TTS, answers on F1 only (quiet is the exception where the board is the answer).
 - Inbox is a durable queue. A wake message appears in this terminal when a note arrives.
 - On every wake, run `bro-inbox claim`. Read the returned file, act on it, then run `bro-inbox done ID` using its id field. Repeat claim until the queue is empty.
 - Switch if they say call / ping / quiet, or if a claimed note has kind=mode.

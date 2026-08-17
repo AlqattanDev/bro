@@ -1,1 +1,0 @@
-Read ~/.partner/CODEX-FIX-WHATS-REAL.md and ~/.partner/CODEX-STATUS-FIX.md. Do exactly those four jobs. No review, no roast, no redesign. Change the code.

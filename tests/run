@@ -8,11 +8,11 @@ trap 'jobs -pr | xargs kill 2>/dev/null || true; rm -rf "$TMP"' EXIT
 fail() { echo "not ok - $*" >&2; exit 1; }
 pass() { echo "ok - $*"; }
 
-mkdir -p "$TMP/bin" "$TMP/home/bin" "$TMP/home/watch" "$TMP/vox/state"
+mkdir -p "$TMP/bin" "$TMP/home/bin" "$TMP/home/watch" "$TMP/home/state" "$TMP/vox/state"
 cp "$ROOT/bin/bro-status-loop" "$ROOT/bin/bro-status-paint" "$TMP/home/bin/"
-printf 'call\n' >"$TMP/home/mode"
-printf 'listening\n' >"$TMP/home/status-word"
-printf '0\n' >"$TMP/home/status-frame"
+printf 'call\n' >"$TMP/home/state/mode"
+printf 'listening\n' >"$TMP/home/state/status-word"
+printf '0\n' >"$TMP/home/state/status-frame"
 
 cat >"$TMP/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -29,38 +29,38 @@ PATH="$TMP/bin:$PATH" BRO_HOME="$TMP/home" VOX_STATE="$TMP/vox/state/state.json"
   BRO_STATUS_INTERVAL=0.05 "$TMP/home/bin/bro-status-loop" &
 status_pid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [[ "$(cat "$TMP/home/status-word")" == ready ]] && break
+  [[ "$(cat "$TMP/home/state/status-word")" == ready ]] && break
   sleep 0.1
 done
 kill -0 "$status_pid" 2>/dev/null || fail "status loop survives tmux with no clients"
-[[ "$(cat "$TMP/home/status-word")" == ready ]] || fail "idle Vox state returns status to ready"
+[[ "$(cat "$TMP/home/state/status-word")" == ready ]] || fail "idle Vox state returns status to ready"
 cat >"$TMP/vox/state/state.json" <<'EOF'
 {"state":"listening","microphone_open":true}
 EOF
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [[ "$(cat "$TMP/home/status-word")" == listening ]] && break
+  [[ "$(cat "$TMP/home/state/status-word")" == listening ]] && break
   sleep 0.1
 done
-[[ "$(cat "$TMP/home/status-word")" == listening ]] || fail "open microphone sets listening"
+[[ "$(cat "$TMP/home/state/status-word")" == listening ]] || fail "open microphone sets listening"
 cat >"$TMP/vox/state/state.json" <<'EOF'
 {"state":"speaking","microphone_open":false}
 EOF
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [[ "$(cat "$TMP/home/status-word")" == speaking ]] && break
+  [[ "$(cat "$TMP/home/state/status-word")" == speaking ]] && break
   sleep 0.1
 done
-[[ "$(cat "$TMP/home/status-word")" == speaking ]] || fail "Vox speaking sets speaking"
+[[ "$(cat "$TMP/home/state/status-word")" == speaking ]] || fail "Vox speaking sets speaking"
 cat >"$TMP/vox/state/state.json" <<'EOF'
 {"state":"idle","microphone_open":false}
 EOF
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [[ "$(cat "$TMP/home/status-word")" == ready ]] && break
+  [[ "$(cat "$TMP/home/state/status-word")" == ready ]] && break
   sleep 0.1
 done
-[[ "$(cat "$TMP/home/status-word")" == ready ]] || fail "closed microphone returns to ready after speaking"
-printf 'quiet\n' >"$TMP/home/mode"
+[[ "$(cat "$TMP/home/state/status-word")" == ready ]] || fail "closed microphone returns to ready after speaking"
+printf 'quiet\n' >"$TMP/home/state/mode"
 BRO_HOME="$TMP/home" "$TMP/home/bin/bro-status-paint"
-grep -q 'quiet .*ready' "$TMP/home/status-line" || fail "mode prefix repaints live"
+grep -q 'quiet .*ready' "$TMP/home/state/status-line" || fail "mode prefix repaints live"
 kill "$status_pid"
 wait "$status_pid" 2>/dev/null || true
 pass "status loop survives tmux absence and follows Vox through listening, speaking, and ready"
@@ -86,17 +86,40 @@ exit 0
 EOF
 chmod +x "$TMP/bin/tmux"
 PATH="$TMP/bin:$PATH" BRO_HOME="$SUP_HOME" "$SUP_HOME/bin/bro" attach
-first_status_pid="$(cat "$SUP_HOME/status-loop.pid")"
+first_status_pid="$(cat "$SUP_HOME/state/status-loop.pid")"
 kill -0 "$first_status_pid" 2>/dev/null || fail "attach starts the status loop"
 kill "$first_status_pid"
 wait "$first_status_pid" 2>/dev/null || true
 PATH="$TMP/bin:$PATH" BRO_HOME="$SUP_HOME" "$SUP_HOME/bin/bro" attach
-second_status_pid="$(cat "$SUP_HOME/status-loop.pid")"
+second_status_pid="$(cat "$SUP_HOME/state/status-loop.pid")"
 [[ "$second_status_pid" != "$first_status_pid" ]] || fail "attach replaces dead status loop pid"
 kill -0 "$second_status_pid" 2>/dev/null || fail "replacement status loop is alive"
 kill "$second_status_pid" 2>/dev/null || true
 wait "$second_status_pid" 2>/dev/null || true
 pass "every attach supervises and restarts the status loop"
+
+# state/ migration: any bro command moves the old root-level files once, and
+# never overwrites a live state/ file with a stale root one.
+MIG_HOME="$TMP/mig-home"
+mkdir -p "$MIG_HOME"
+printf 'working\n' >"$MIG_HOME/status-word"
+printf 'claude\n' >"$MIG_HOME/backend"
+printf 'no-screen\n' >"$MIG_HOME/show-policy"
+printf '12345\n' >"$MIG_HOME/status-loop.pid"
+printf 'call\n' >"$MIG_HOME/mode"
+mkdir -p "$MIG_HOME/state"
+printf 'quiet\n' >"$MIG_HOME/state/mode"
+BRO_HOME="$MIG_HOME" "$ROOT/bin/bro" help >/dev/null
+[[ "$(cat "$MIG_HOME/state/status-word")" == working ]] || fail "status-word did not migrate into state/"
+[[ "$(cat "$MIG_HOME/state/backend")" == claude ]] || fail "backend did not migrate into state/"
+[[ "$(cat "$MIG_HOME/state/show-policy")" == no-screen ]] || fail "show-policy did not migrate into state/"
+[[ "$(cat "$MIG_HOME/state/status-loop.pid")" == 12345 ]] || fail "status-loop.pid did not migrate into state/"
+for f in status-word backend show-policy status-loop.pid; do
+  [[ ! -e "$MIG_HOME/$f" ]] || fail "migrated $f was left behind at the root"
+done
+[[ "$(cat "$MIG_HOME/state/mode")" == quiet ]] || fail "migration overwrote a live state/ file"
+[[ -e "$MIG_HOME/mode" ]] || fail "an unmigrated duplicate should stay put, not vanish"
+pass "state files migrate into state/ once and never overwrite the live copy"
 
 # Phase 5: attaching starts a face and a queue — never an eye. There is no
 # watch loop to start, no pidfile for one, and the only loop bro runs paints
@@ -119,8 +142,8 @@ PATH="$TMP/bin:$PATH" FAKE_SNAP_LOG="$TMP/sup-snap.log" BRO_HOME="$SUP_HOME" \
 PATH="$TMP/bin:$PATH" FAKE_SNAP_LOG="$TMP/sup-snap.log" BRO_HOME="$SUP_HOME" \
   "$SUP_HOME/bin/bro" read >/dev/null 2>&1 || true
 [[ -s "$TMP/sup-snap.log" ]] || fail "bro read looks now instead of printing a stale file"
-kill "$(cat "$SUP_HOME/status-loop.pid")" 2>/dev/null || true
-rm -f "$SUP_HOME/status-loop.pid"
+kill "$(cat "$SUP_HOME/state/status-loop.pid")" 2>/dev/null || true
+rm -f "$SUP_HOME/state/status-loop.pid"
 pass "no bro process captures anything on a timer, and asking looks immediately"
 
 BAR_HOME="$TMP/bar-home"
@@ -138,7 +161,7 @@ chmod +x "$BAR_HOME/bin/"*
 # No dist/BroBar.app built: bro must start anyway and leave no bar pidfile.
 PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" attach \
   || fail "bro starts with no BroBar built"
-[[ ! -e "$BAR_HOME/bro-bar.pid" ]] || fail "bro writes no bar pidfile without dist"
+[[ ! -e "$BAR_HOME/state/bro-bar.pid" ]] || fail "bro writes no bar pidfile without dist"
 PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" stop >/dev/null
 # Now with a stub executable standing in for the built app.
 mkdir -p "$BAR_HOME/dist/BroBar.app/Contents/MacOS"
@@ -148,12 +171,12 @@ while true; do sleep 10; done
 EOF
 chmod +x "$BAR_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
 PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" attach
-bar_pid="$(cat "$BAR_HOME/bro-bar.pid")"
+bar_pid="$(cat "$BAR_HOME/state/bro-bar.pid")"
 kill -0 "$bar_pid" 2>/dev/null || fail "bro starts BroBar and records a live pid"
 PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" attach
-[[ "$(cat "$BAR_HOME/bro-bar.pid")" == "$bar_pid" ]] || fail "second attach reuses the live BroBar"
+[[ "$(cat "$BAR_HOME/state/bro-bar.pid")" == "$bar_pid" ]] || fail "second attach reuses the live BroBar"
 PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" stop >/dev/null
-[[ ! -e "$BAR_HOME/bro-bar.pid" ]] || fail "bro stop removes the bar pidfile"
+[[ ! -e "$BAR_HOME/state/bro-bar.pid" ]] || fail "bro stop removes the bar pidfile"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   kill -0 "$bar_pid" 2>/dev/null || break
   sleep 0.1
@@ -242,23 +265,23 @@ EOF
 chmod +x "$TMP/bin/tmux"
 env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" stop >/dev/null
 : >"$TMP/launchctl.log"
-rm -f "$DAEMON_HOME/status-loop.pid" "$DAEMON_HOME/bro-bar.pid"
+rm -f "$DAEMON_HOME/state/status-loop.pid" "$DAEMON_HOME/state/bro-bar.pid"
 : >"$TMP/daemon-snap.log"
 env "${daemon_env[@]}" BRO_DAEMON_INTERVAL=0.2 "$DAEMON_HOME/bin/bro-daemon" run &
 daemon_pid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [[ -s "$DAEMON_HOME/bro-bar.pid" ]] && break
+  [[ -s "$DAEMON_HOME/state/bro-bar.pid" ]] && break
   sleep 0.2
 done
-[[ -f "$DAEMON_HOME/daemon.pid" ]] || fail "daemon records its own pid"
-d_status_pid="$(cat "$DAEMON_HOME/status-loop.pid")"
-d_bar_pid="$(cat "$DAEMON_HOME/bro-bar.pid")"
+[[ -f "$DAEMON_HOME/state/daemon.pid" ]] || fail "daemon records its own pid"
+d_status_pid="$(cat "$DAEMON_HOME/state/status-loop.pid")"
+d_bar_pid="$(cat "$DAEMON_HOME/state/bro-bar.pid")"
 kill -0 "$d_status_pid" 2>/dev/null || fail "daemon starts the status loop headlessly"
 kill -0 "$d_bar_pid" 2>/dev/null || fail "daemon starts BroBar headlessly"
 # A terminal attaching is a client: it reuses what the daemon already runs.
 env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" attach
-[[ "$(cat "$DAEMON_HOME/bro-bar.pid")" == "$d_bar_pid" ]] || fail "a terminal reuses the daemon's BroBar"
-[[ "$(cat "$DAEMON_HOME/status-loop.pid")" == "$d_status_pid" ]] || fail "a terminal reuses the daemon's loops"
+[[ "$(cat "$DAEMON_HOME/state/bro-bar.pid")" == "$d_bar_pid" ]] || fail "a terminal reuses the daemon's BroBar"
+[[ "$(cat "$DAEMON_HOME/state/status-loop.pid")" == "$d_status_pid" ]] || fail "a terminal reuses the daemon's loops"
 # ...and that terminal exiting (detach, closed window) tears nothing down.
 sleep 0.4
 kill -0 "$daemon_pid" 2>/dev/null || fail "detaching a terminal leaves the daemon running"
@@ -268,10 +291,10 @@ kill -0 "$d_bar_pid" 2>/dev/null || fail "detaching a terminal leaves BroBar run
 kill "$d_status_pid"
 wait "$d_status_pid" 2>/dev/null || true
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [[ "$(cat "$DAEMON_HOME/status-loop.pid")" != "$d_status_pid" ]] && break
+  [[ "$(cat "$DAEMON_HOME/state/status-loop.pid")" != "$d_status_pid" ]] && break
   sleep 0.2
 done
-new_status_pid="$(cat "$DAEMON_HOME/status-loop.pid")"
+new_status_pid="$(cat "$DAEMON_HOME/state/status-loop.pid")"
 [[ "$new_status_pid" != "$d_status_pid" ]] || fail "daemon replaces a dead status loop"
 kill -0 "$new_status_pid" 2>/dev/null || fail "daemon's replacement status loop is alive"
 # Phase 5: the supervisor keeps the backend alive without ever making it look.
@@ -282,14 +305,14 @@ kill -0 "$new_status_pid" 2>/dev/null || fail "daemon's replacement status loop 
 env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" stop >/dev/null
 wait "$daemon_pid" 2>/dev/null || true
 kill -0 "$daemon_pid" 2>/dev/null && fail "bro stop stops the daemon"
-[[ ! -e "$DAEMON_HOME/daemon.pid" ]] || fail "bro stop clears the daemon pidfile"
+[[ ! -e "$DAEMON_HOME/state/daemon.pid" ]] || fail "bro stop clears the daemon pidfile"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   kill -0 "$new_status_pid" 2>/dev/null || break
   sleep 0.1
 done
 kill -0 "$new_status_pid" 2>/dev/null && fail "bro stop stops the status loop"
 kill -0 "$d_bar_pid" 2>/dev/null && fail "bro stop stops BroBar"
-[[ ! -e "$DAEMON_HOME/bro-bar.pid" ]] || fail "bro stop clears the bar pidfile"
+[[ ! -e "$DAEMON_HOME/state/bro-bar.pid" ]] || fail "bro stop clears the bar pidfile"
 pass "the daemon owns the backend, a terminal detaching leaves it up, and bro stop takes it down"
 
 QUEUE_HOME="$TMP/queue-home"
@@ -475,12 +498,19 @@ grep -q 'pane-line-from-terminal' "$SNAP_HOME/watch/latest.md" || fail "no-arg s
 grep -q 'target: bro:you' "$SNAP_HOME/watch/latest.md" || fail "pane snapshot still names its target"
 [[ ! -s "$TMP/capture.log" ]] || fail "pane snapshot took a screenshot"
 # show-policy can forbid screen capture outright.
-printf 'no-screen\n' >"$SNAP_HOME/show-policy"
+mkdir -p "$SNAP_HOME/state"
+printf 'no-screen\n' >"$SNAP_HOME/state/show-policy"
 : >"$TMP/capture.log"
 PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/sips.log" \
   BRO_HOME="$SNAP_HOME" "$SNAP_HOME/bin/bro-snapshot" --screen 2>/dev/null \
   && fail "show-policy no-screen blocks capture"
 [[ ! -s "$TMP/capture.log" ]] || fail "blocked policy still ran screencapture"
+# A pre-state/ home keeps working: the root file is honoured while no state/ one exists.
+rm -f "$SNAP_HOME/state/show-policy"
+printf 'no-screen\n' >"$SNAP_HOME/show-policy"
+PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/sips.log" \
+  BRO_HOME="$SNAP_HOME" "$SNAP_HOME/bin/bro-snapshot" --screen 2>/dev/null \
+  && fail "legacy root show-policy was ignored"
 rm -f "$SNAP_HOME/show-policy"
 pass "bro-snapshot --screen shoots and downscales the display while the pane path is unchanged"
 
@@ -574,7 +604,7 @@ first_summon="$(env "${summon_env[@]}" "$SUMMON_HOME/bin/bro-summon" text 'what 
 elapsed=$(( $(date +%s) - started ))
 [[ "$elapsed" -le 2 ]] || fail "a summon blocked instead of returning immediately"
 [[ -n "$first_summon" ]] || fail "a summon prints the queued note id"
-[[ "$(cat "$SUMMON_HOME/status-word")" == working ]] || fail "a summon puts the bar in working"
+[[ "$(cat "$SUMMON_HOME/state/status-word")" == working ]] || fail "a summon puts the bar in working"
 summon_note="$SUMMON_HOME/inbox/pending/$first_summon.md"
 [[ -f "$summon_note" ]] || fail "a summon leaves a pending note for the backend to claim"
 grep -qx 'kind=ask' "$summon_note" || fail "a typed summon is queued as an ask"

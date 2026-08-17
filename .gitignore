@@ -4,6 +4,10 @@ watch/
 inbox/
 show/current.md
 bro-boot-prompt.txt
+/state/
+/verify.md
+# Pre-state/ layout: ignore the old root files too, so a checkout that has not
+# migrated yet (or a file recreated by an old binary) stays out of git.
 status-word
 status-backend-word
 status-line
@@ -18,5 +22,4 @@ daemon.pid
 /show-policy
 /speakers/
 __pycache__/
-
-/verify.md
+show/panel

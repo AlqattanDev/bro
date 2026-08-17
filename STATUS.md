@@ -18,7 +18,9 @@ file is `DONE`.
 
 ## Waiting on Ali at the keyboard
 
-Nothing here is known broken — it is the part no test can reach.
+Nothing here is known broken — it is the part no test can reach. There is now
+a script for it: **`bro verify`** walks all five and records the outcome in
+`~/.bro/verify.md`.
 
 1. `bro daemon install` — deliberately not run. It writes a login item into
    `~/Library/LaunchAgents`; that is Ali's machine startup to change, not mine.
@@ -34,6 +36,19 @@ Nothing here is known broken — it is the part no test can reach.
 5. `bro summon "read this page for me"` with a webpage up — confirm it takes a
    screen snapshot, not the terminal pane.
 
+## Settled since (2026-08-17, second pass)
+
+- **State lives in `~/.bro/state/`** — words, pidfiles, mode, backend,
+  show-policy. Any `bro` command migrates an old flat install once, never
+  overwriting a live file. BroBar and tmux.conf read `state/` first with the
+  root path as fallback.
+- **The `~/.partner` era is gone** — CODEX work orders, `inbox.md`, and
+  `show/codex-job.txt` deleted; `watch/stream.log` and its 1MB cap removed
+  from `bro-snapshot`.
+- **`README.md` exists** — philosophy, install, keys, layout.
+- **23 tests** (was 19): bro-verify, state migration, legacy show-policy
+  fallback.
+
 ## Things worth knowing
 
 - **One menu bar item.** Bro claims `~/.vox/status-host.json`; Vox hides its
@@ -42,6 +57,4 @@ Nothing here is known broken — it is the part no test can reach.
 - **The screen is ask-only on purpose.** Three gates: the caller passes no
   `--screen`, `BRO_NO_SCREEN` refuses it in any automatic context, and
   `show-policy` can refuse outright. Keep all three when touching this.
-- **`watch/stream.log`** now grows only when someone asks, and its 1MB cap is
-  near-irrelevant. Harmless, deletable in a later pass.
 - **Speaker ID is on**, with `ali` and `boss` enrolled.

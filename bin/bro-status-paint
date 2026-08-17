@@ -2,12 +2,13 @@
 # Paint ~/.bro/status-line once. Used by bro-status and the animator.
 set -euo pipefail
 BRO_HOME="${BRO_HOME:-$HOME/.bro}"
-WORD="$BRO_HOME/status-word"
-LINE="$BRO_HOME/status-line"
-FRAME="$BRO_HOME/status-frame"
+STATE="${BRO_STATE_DIR:-$BRO_HOME/state}"
+WORD="$STATE/status-word"
+LINE="$STATE/status-line"
+FRAME="$STATE/status-frame"
 
 word="$(tr -d '[:space:]' <"$WORD" 2>/dev/null || echo ready)"
-mode="$(tr -d '[:space:]' <"$BRO_HOME/mode" 2>/dev/null || echo call)"
+mode="$(tr -d '[:space:]' <"$STATE/mode" 2>/dev/null || echo call)"
 n="$(tr -d '[:space:]' <"$FRAME" 2>/dev/null || echo 0)"
 [[ "$n" =~ ^[0-9]+$ ]] || n=0
 

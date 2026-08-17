@@ -2,10 +2,12 @@
 # Set bro bar state. Usage: bro-status working|speaking|listening|ready|starting
 set -euo pipefail
 BRO_HOME="${BRO_HOME:-$HOME/.bro}"
-WORD="$BRO_HOME/status-word"
-LINE="$BRO_HOME/status-line"
-OWNER="$BRO_HOME/status-owner"
-BACKEND_WORD="$BRO_HOME/status-backend-word"
+STATE="${BRO_STATE_DIR:-$BRO_HOME/state}"
+mkdir -p "$STATE"
+WORD="$STATE/status-word"
+LINE="$STATE/status-line"
+OWNER="$STATE/status-owner"
+BACKEND_WORD="$STATE/status-backend-word"
 word="${1:-ready}"
 echo "$word" >"$WORD"
 if [[ "${2:-}" == "--hint" ]]; then

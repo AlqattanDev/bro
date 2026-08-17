@@ -151,7 +151,7 @@ else
     else
       record summon-screen fail
       echo "    ✗ screen.png was NOT refreshed. If show-policy says no-screen this is"
-      echo "      correct behavior — check: cat ~/.bro/show-policy"
+      echo "      correct behavior — check: cat ~/.bro/state/show-policy"
       echo "      Otherwise check logs/backend.log for what the backend did instead."
     fi
   else

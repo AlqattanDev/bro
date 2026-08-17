@@ -24,14 +24,14 @@ export PATH="$BRO_HOME/bin:$PATH"
 SESSION="$BRO_SESSION"
 CONF="$BRO_HOME/tmux.conf"
 WATCH="$BRO_HOME/watch"
-MODE_FILE="$BRO_HOME/mode"
+STATE="${BRO_STATE_DIR:-$BRO_HOME/state}"
+MODE_FILE="$STATE/mode"
 INBOX_TOOL="$BRO_HOME/bin/bro-inbox"
 # Private socket so we never fight your other tmux sessions.
 TMUXC=(tmux -L "$BRO_TMUX_SOCKET" -f "$CONF")
 
 mkdir -p "$BRO_HOME"
 cmd="${1:-start}"
-
 usage() {
   cat <<'EOF'
 bro — full-screen work + hidden agent + clean board
@@ -77,16 +77,31 @@ Explanations go on the F1 panel via bro-show; `bro board` opens the same text in
 Watch / show:
   ~/.bro/watch/latest.md
   ~/.bro/show/current.md
-  ~/.bro/backend          saved backend name
+  ~/.bro/state/backend    saved backend name
 EOF
 }
 
 ensure_dirs() {
-  mkdir -p "$WATCH" "$BRO_HOME/logs"
+  mkdir -p "$WATCH" "$BRO_HOME/logs" "$STATE"
+  migrate_state
+}
+
+# One-time move of the root-level singleton files into state/. Runs on every
+# bro invocation; a no-op once nothing sits at the root any more. Never
+# overwrites: a file that already exists in state/ is the live one.
+migrate_state() {
+  local f
+  for f in status-word status-backend-word status-line status-frame \
+           status-owner status-loop.pid bro-bar.pid daemon.pid \
+           mode backend show-policy; do
+    if [[ -f "$BRO_HOME/$f" && ! -e "$STATE/$f" ]]; then
+      mv "$BRO_HOME/$f" "$STATE/$f" 2>/dev/null || true
+    fi
+  done
 }
 
 start_status_loop() {
-  local pidfile="$BRO_HOME/status-loop.pid"
+  local pidfile="$STATE/status-loop.pid"
   if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     return 0
   fi
@@ -105,7 +120,7 @@ start_bro_bar() {
   local bar
   bar="$(bro_bar_bin)"
   [[ -x "$bar" ]] || return 0
-  local pidfile="$BRO_HOME/bro-bar.pid"
+  local pidfile="$STATE/bro-bar.pid"
   if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     return 0
   fi
@@ -114,7 +129,7 @@ start_bro_bar() {
 }
 
 stop_bro_bar() {
-  local pidfile="$BRO_HOME/bro-bar.pid"
+  local pidfile="$STATE/bro-bar.pid"
   if [[ -f "$pidfile" ]]; then
     kill "$(cat "$pidfile")" 2>/dev/null || true
     rm -f "$pidfile"
@@ -129,7 +144,7 @@ stop_daemon() {
     "$d" stop >/dev/null 2>&1 || true
     return 0
   fi
-  local pidfile="$BRO_HOME/daemon.pid"
+  local pidfile="$STATE/daemon.pid"
   if [[ -f "$pidfile" ]]; then
     kill "$(cat "$pidfile")" 2>/dev/null || true
     rm -f "$pidfile"
@@ -144,7 +159,7 @@ stop_loops() {
     kill "$(cat "$pidfile")" 2>/dev/null || true
     rm -f "$pidfile"
   fi
-  local spid="$BRO_HOME/status-loop.pid"
+  local spid="$STATE/status-loop.pid"
   if [[ -f "$spid" ]]; then
     kill "$(cat "$spid")" 2>/dev/null || true
     rm -f "$spid"
@@ -189,6 +204,11 @@ create_session() {
   "${TMUXC[@]}" display-message -t "$SESSION" 'bro ready — Ctrl-a p shows me, Ctrl-a o hides me'
 }
 
+# Migrate before any command touches a state path, so `bro stop` on a
+# pre-state/ install still finds the pidfiles it has to kill.
+mkdir -p "$STATE"
+migrate_state
+
 case "$cmd" in
   ""|start|attach)
     # A terminal is a client. It brings the backend up if nobody else has, then
@@ -218,16 +238,17 @@ case "$cmd" in
       echo "usage: bro --backend grok|claude|codex" >&2
       exit 2
     fi
-    echo "$BRO_BACKEND" >"$BRO_HOME/backend"
+    echo "$BRO_BACKEND" >"$STATE/backend"
     exec env BRO_BACKEND="$BRO_BACKEND" "$0" start
     ;;
   backend)
     if [[ -n "${2:-}" ]]; then
-      echo "$2" >"$BRO_HOME/backend"
+      mkdir -p "$STATE"
+      echo "$2" >"$STATE/backend"
       echo "backend set to $2"
     else
-      if [[ -f "$BRO_HOME/backend" ]]; then
-        echo "backend: $(cat "$BRO_HOME/backend")"
+      if [[ -f "$STATE/backend" ]]; then
+        echo "backend: $(cat "$STATE/backend")"
       else
         echo "backend: ${BRO_BACKEND:-grok} (default)"
       fi

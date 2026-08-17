@@ -30,7 +30,7 @@ LABEL="${BRO_DAEMON_LABEL:-com.bro.backend}"
 AGENTS_DIR="${BRO_LAUNCH_AGENTS:-$HOME/Library/LaunchAgents}"
 PLIST="$AGENTS_DIR/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
-PIDFILE="$BRO_HOME/daemon.pid"
+PIDFILE="${BRO_STATE_DIR:-$BRO_HOME/state}/daemon.pid"
 
 usage() {
   sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
@@ -99,7 +99,7 @@ shutdown_clean() {
 }
 
 run() {
-  mkdir -p "$BRO_HOME/logs"
+  mkdir -p "$BRO_HOME/logs" "${BRO_STATE_DIR:-$BRO_HOME/state}"
   if alive "$PIDFILE" && [[ "$(cat "$PIDFILE")" != "$$" ]]; then
     echo "bro-daemon already running (pid $(cat "$PIDFILE"))" >&2
     exit 0

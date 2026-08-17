@@ -2,16 +2,17 @@
 # Animate the tmux status word once a second.
 set -euo pipefail
 BRO_HOME="${BRO_HOME:-$HOME/.bro}"
-FRAME="$BRO_HOME/status-frame"
+STATE="${BRO_STATE_DIR:-$BRO_HOME/state}"
+FRAME="$STATE/status-frame"
 PAINT="$BRO_HOME/bin/bro-status-paint"
 n=0
 SOCKET="${BRO_TMUX_SOCKET:-bro}"
 VOX_STATE="${VOX_STATE:-$HOME/.vox/state/state.json}"
-WORD="$BRO_HOME/status-word"
-OWNER="$BRO_HOME/status-owner"
-BACKEND_WORD="$BRO_HOME/status-backend-word"
+WORD="$STATE/status-word"
+OWNER="$STATE/status-owner"
+BACKEND_WORD="$STATE/status-backend-word"
 INTERVAL="${BRO_STATUS_INTERVAL:-0.25}"
-mkdir -p "$BRO_HOME"
+mkdir -p "$STATE"
 [[ -f "$WORD" ]] || echo ready >"$WORD"
 
 # What the backend last said about itself ("working" survives a voice turn).

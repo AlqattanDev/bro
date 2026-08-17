@@ -1,8 +1,8 @@
 // BroBar — bro's face in the macOS menu bar.
 //
-// Polls ~/.bro/status-word and ~/.bro/mode twice a second and renders the word
+// Polls ~/.bro/state/status-word and ~/.bro/state/mode twice a second and renders the word
 // with a colored dot, using the exact palette of bin/bro-status-paint. Clicking
-// the item runs bin/bro-wake. No dock icon (LSUIElement), no terminal or tmux
+// the item opens the answer panel. No dock icon (LSUIElement), no terminal or tmux
 // required, and every file read is best-effort: a missing or unreadable file
 // degrades to the same defaults bro-status-paint uses ("ready" / "call").
 //
@@ -29,8 +29,13 @@ enum BroPaths {
         return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".bro")
     }()
 
-    static var statusWord: URL { home.appendingPathComponent("status-word") }
-    static var mode: URL { home.appendingPathComponent("mode") }
+    static var state: URL { home.appendingPathComponent("state") }
+    /// Live location is state/; the root path is the pre-state/ layout, kept
+    /// as a read fallback so a bar launched mid-upgrade never goes blind.
+    static var statusWord: URL { state.appendingPathComponent("status-word") }
+    static var statusWordLegacy: URL { home.appendingPathComponent("status-word") }
+    static var mode: URL { state.appendingPathComponent("mode") }
+    static var modeLegacy: URL { home.appendingPathComponent("mode") }
     static var wake: URL { home.appendingPathComponent("bin/bro-wake") }
     static var hotkeysTool: URL { home.appendingPathComponent("bin/bro-hotkeys") }
     static var statusHostTool: URL { home.appendingPathComponent("bin/bro-status-host") }
@@ -262,6 +267,16 @@ func readWord(_ url: URL, fallback: String) -> String {
     return word.isEmpty ? fallback : word
 }
 
+/// state/ first, then the legacy root path. `readWord` cannot tell "missing"
+/// from "unreadable", so the fallback only fires when the primary truly has
+/// nothing to say — which is exactly the mid-upgrade window.
+func readWord(_ primary: URL, legacy: URL, fallback: String) -> String {
+    if FileManager.default.fileExists(atPath: primary.path) {
+        return readWord(primary, fallback: fallback)
+    }
+    return readWord(legacy, fallback: fallback)
+}
+
 // MARK: - Palette
 
 /// Same mapping as bin/bro-status-paint. Keep the two in sync.
@@ -350,8 +365,8 @@ final class BroBar: NSObject, NSApplicationDelegate {
     }
 
     private func render() {
-        let word = readWord(BroPaths.statusWord, fallback: "ready")
-        let mode = readWord(BroPaths.mode, fallback: "call")
+        let word = readWord(BroPaths.statusWord, legacy: BroPaths.statusWordLegacy, fallback: "ready")
+        let mode = readWord(BroPaths.mode, legacy: BroPaths.modeLegacy, fallback: "call")
         let voice = vox.snapshot
         let next = Rendered(word: word, mode: mode, vox: voice)
         if rendered == next { return }
@@ -427,7 +442,7 @@ final class BroBar: NSObject, NSApplicationDelegate {
         } else if vox.micOpen {
             head = "Mic is LIVE — click to stop listening."
         } else {
-            head = "bro — \(prefix(for: mode))\(word). Click to wake bro."
+            head = "bro — \(prefix(for: mode))\(word). Click to open the panel."
         }
         let voiceLine = detail.isEmpty ? "" : " \(detail)"
         return head + voiceLine + " Right-click for voice controls."
@@ -547,7 +562,7 @@ final class BroBar: NSObject, NSApplicationDelegate {
             vox.send("end_turn")
             return
         }
-        wakeBro()
+        panel.toggle()
     }
 
     /// What Vox's popover and its More… menu offered, as one menu. The panel's

@@ -43,8 +43,10 @@ if [[ "$MODE" == screen ]]; then
     exit 2
   fi
   POLICY=ask-only
-  if [[ -f "$BRO_HOME/show-policy" ]]; then
-    POLICY="$(tr -d '[:space:]' <"$BRO_HOME/show-policy")"
+  POLICY_FILE="$BRO_HOME/state/show-policy"
+  [[ -f "$POLICY_FILE" ]] || POLICY_FILE="$BRO_HOME/show-policy"
+  if [[ -f "$POLICY_FILE" ]]; then
+    POLICY="$(tr -d '[:space:]' <"$POLICY_FILE")"
     POLICY="${POLICY:-ask-only}"
   fi
   case "$POLICY" in
@@ -119,17 +121,6 @@ fi
 # Last ~200 lines of the work pane (enough for errors without huge files).
 if "${TMUXC[@]}" capture-pane -t "$TARGET" -p -S -200 >>"$WATCH/latest.md" 2>/dev/null; then
   cp "$WATCH/latest.md" "$WATCH/scrollback.txt"
-  # Also append a short marker to a rolling log
-  {
-    echo ""
-    echo "===== $(date '+%H:%M:%S') ====="
-    tail -n 40 "$WATCH/latest.md"
-  } >>"$WATCH/stream.log"
-  # Keep stream.log from growing forever (~1MB cap by truncation)
-  if [[ -f "$WATCH/stream.log" ]] && [[ $(wc -c <"$WATCH/stream.log") -gt 1000000 ]]; then
-    tail -c 500000 "$WATCH/stream.log" >"$WATCH/stream.log.tmp"
-    mv "$WATCH/stream.log.tmp" "$WATCH/stream.log"
-  fi
   exit 0
 fi
 
