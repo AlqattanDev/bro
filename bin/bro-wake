@@ -2,10 +2,17 @@
 set -euo pipefail
 
 BRO_HOME="${BRO_HOME:-$HOME/.bro}"
-SOCKET="${BRO_TMUX_SOCKET:-bro}"
 SESSION="${BRO_SESSION:-bro}"
 TERMINAL_APP="${BRO_TERMINAL_APP:-Terminal}"
 reason="${1:-event}"
+
+# A foreign BRO_HOME (tests, a scratch install) must never poke the live
+# session. `bin/bro` exports BRO_TMUX_SOCKET=bro when unset, so "socket
+# not set" is not enough — the live socket name itself is the tell.
+SOCKET="${BRO_TMUX_SOCKET:-bro}"
+if [[ "$BRO_HOME" != "$HOME/.bro" && "$SOCKET" == "bro" ]]; then
+  exit 0
+fi
 
 # Bro is global. A click talks to the backend; it must not steal the app
 # Ali is already in. The only time a terminal may appear is a cold start
