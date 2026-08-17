@@ -129,8 +129,22 @@ do_install() {
   plutil -lint "$PLIST" >/dev/null
   if loaded; then
     launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+    # bootout is asynchronous: bootstrapping while launchd is still tearing
+    # the old instance down fails with "Bootstrap failed: 5". Wait it out.
+    for _ in $(seq 1 50); do
+      loaded || break
+      sleep 0.1
+    done
   fi
-  launchctl bootstrap "$DOMAIN" "$PLIST"
+  local tries=0
+  until launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [[ "$tries" -ge 5 ]]; then
+      launchctl bootstrap "$DOMAIN" "$PLIST"   # last try, errors visible
+      break
+    fi
+    sleep 0.5
+  done
   echo "installed $LABEL -> $PLIST"
 }
 
