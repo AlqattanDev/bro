@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# bro-doctor — one command that checks the whole machine story.
+#
+# Every check prints ✓, ✗ (with the fix next to it), or ! for an optional
+# thing that is simply off. Exit code is non-zero if anything failed, so
+# `bro doctor || read the output` is the whole ritual after an install or
+# an upgrade. Safe to run any time: nothing here writes state or captures
+# anything beyond a 1-pixel probe of the screen-recording grant.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+STATE="${BRO_STATE_DIR:-$BRO_HOME/state}"
+SOCKET="${BRO_TMUX_SOCKET:-bro}"
+SESSION="${BRO_SESSION:-bro}"
+VOX_HEALTH_URL="${VOX_HEALTH_URL:-http://127.0.0.1:8766/health}"
+
+fails=0
+ok()   { printf '✓ %s\n' "$1"; }
+bad()  { printf '✗ %s — %s\n' "$1" "$2"; fails=$((fails + 1)); }
+note() { printf '! %s\n' "$1"; }
+
+# --- tmux -------------------------------------------------------------------
+if command -v tmux >/dev/null 2>&1; then
+  ok "tmux ($(tmux -V))"
+else
+  bad "tmux missing" "brew install tmux"
+fi
+
+# --- backend binary ----------------------------------------------------------
+backend="$(tr -d '[:space:]' 2>/dev/null <"$STATE/backend" || true)"
+backend="${backend:-grok}"
+if command -v "$backend" >/dev/null 2>&1; then
+  ok "backend binary: $backend"
+else
+  bad "backend binary '$backend' not found" "install it, or switch: bro backend grok|claude|codex"
+fi
+
+# --- backend session ---------------------------------------------------------
+if tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+  word="$(tr -d '[:space:]' <"$STATE/status-word" 2>/dev/null || echo unknown)"
+  if [[ "$word" == down ]]; then
+    cause="$(tail -n 3 "$BRO_HOME/logs/backend.log" 2>/dev/null | tr '\n' ' ' | sed 's/  */ /g')"
+    bad "backend is down" "last log: ${cause:-empty} — fix, then: bro daemon restart (or bro stop && bro)"
+  else
+    ok "backend session up (word: $word)"
+  fi
+else
+  note "no bro session right now — start one with: bro (or install the daemon)"
+fi
+
+# --- Vox ---------------------------------------------------------------------
+health="$(curl -sS --max-time 2 "$VOX_HEALTH_URL" 2>/dev/null || true)"
+if [[ -n "$health" ]]; then
+  ok "vox voice service"
+else
+  note "vox not reachable — voice is silent until it is (bro works without it)"
+fi
+
+# --- BroBar ------------------------------------------------------------------
+bar="$BRO_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
+if [[ -x "$bar" ]]; then
+  sig="$(codesign -dvvv "$BRO_HOME/dist/BroBar.app" 2>&1 || true)"
+  if grep -q 'Authority=Vox Local Signing' <<<"$sig"; then
+    ok "BroBar built and signed (Vox Local Signing)"
+  else
+    note "BroBar signed ad-hoc — Accessibility trust will not survive rebuilds (create the 'Vox Local Signing' identity)"
+  fi
+  pidfile="$STATE/bro-bar.pid"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    ok "BroBar running (pid $(cat "$pidfile"))"
+  else
+    note "BroBar not running — it starts with: bro"
+  fi
+  if grep -q 'NOT registered' "$BRO_HOME/logs/bro-bar.log" 2>/dev/null; then
+    bad "a global hotkey failed to register" "another app owns it — rebind in ~/.bro/hotkeys, then: bro stop && bro"
+  else
+    ok "global hotkeys registered"
+  fi
+else
+  bad "BroBar not built" "bin/build-bro-bar"
+fi
+
+# --- daemon ------------------------------------------------------------------
+daemon_status="$("$BRO_HOME/bin/bro-daemon" status 2>/dev/null || true)"
+if grep -q 'plist: installed' <<<"$daemon_status"; then
+  if grep -q 'launchd: loaded' <<<"$daemon_status" && grep -q 'supervisor: running' <<<"$daemon_status"; then
+    ok "launchd daemon owns the backend"
+  else
+    bad "daemon installed but not running" "bro daemon restart"
+  fi
+else
+  note "daemon not installed (optional) — bro dies with the last terminal until: bro daemon install"
+fi
+
+# --- speakers ----------------------------------------------------------------
+if [[ -f "$BRO_HOME/speakers/enabled" ]] && [[ "$(tr -d '[:space:]' <"$BRO_HOME/speakers/enabled")" == on ]]; then
+  if [[ -x "$BRO_HOME/speakers/venv/bin/python" ]]; then
+    ok "speaker ID on, venv present"
+  else
+    bad "speaker ID on but venv missing" "re-run the speakers setup in bin/bro-speakers"
+  fi
+else
+  note "speaker ID off (optional) — bro speakers on"
+fi
+
+# --- screen recording --------------------------------------------------------
+# A 1-pixel probe, never stored. CGPreflightScreenCaptureAccess answers without
+# triggering the system prompt; without pyobjc we say unknown rather than guess.
+screen_access="$(/usr/bin/python3 -c '
+try:
+    import Quartz
+    print("yes" if Quartz.CGPreflightScreenCaptureAccess() else "no")
+except Exception:
+    print("unknown")
+' 2>/dev/null || echo unknown)"
+case "$screen_access" in
+  yes) ok "screen recording granted (bro-snapshot --screen can see)" ;;
+  no)  note "screen recording not granted — 'read this page' asks stay blind until System Settings → Privacy & Security → Screen Recording" ;;
+  *)   note "screen recording grant: unknown (no pyobjc to preflight)" ;;
+esac
+
+# --- inbox -------------------------------------------------------------------
+pending="$(find "$BRO_HOME/inbox/pending" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')"
+stale_claimed=0
+now="$(date +%s)"
+while IFS= read -r f; do
+  mtime="$(stat -f %m "$f" 2>/dev/null || echo "$now")"
+  (( now - mtime > 3600 )) && stale_claimed=$((stale_claimed + 1))
+done < <(find "$BRO_HOME/inbox/claimed" -type f -name '*.md' 2>/dev/null)
+if [[ "$stale_claimed" -gt 0 ]]; then
+  bad "$stale_claimed note(s) claimed but never finished" "the backend died mid-ask — inspect inbox/claimed, then bro daemon restart"
+elif [[ "$pending" -gt 0 ]]; then
+  note "$pending ask(s) waiting in the queue — the backend will drain them when it is up"
+else
+  ok "inbox queue empty"
+fi
+
+echo
+if [[ "$fails" -gt 0 ]]; then
+  echo "bro doctor: $fails problem(s) — each ✗ above names its fix"
+  exit 1
+fi
+echo "bro doctor: nothing broken"

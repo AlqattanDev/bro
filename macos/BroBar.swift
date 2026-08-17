@@ -285,6 +285,7 @@ func color(for word: String) -> NSColor {
     case "starting", "working": return NSColor(hex: 0xe5c07b)
     case "speaking": return NSColor(hex: 0xc678dd)
     case "listening": return NSColor(hex: 0x61afef)
+    case "down": return NSColor(hex: 0xe06c75)
     case "ready": return NSColor(hex: 0x7dcea0)
     default: return NSColor(hex: 0xaaaaaa)
     }

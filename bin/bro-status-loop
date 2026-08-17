@@ -16,11 +16,23 @@ mkdir -p "$STATE"
 [[ -f "$WORD" ]] || echo ready >"$WORD"
 
 # What the backend last said about itself ("working" survives a voice turn).
+# A "starting" that never lands is a boot that failed: after the timeout the
+# honest word is down, and bro-shell's retry loop rewrites starting (and its
+# mtime) on every attempt, so a retrying backend flips back on its own.
 backend_word() {
-  local w
-  w="$(tr -d '[:space:]' <"$BACKEND_WORD" 2>/dev/null || true)"
+  local w age now
+  w="$(tr -d '[:space:]' 2>/dev/null <"$BACKEND_WORD" || true)"
   case "$w" in
-    working|starting) echo "$w" ;;
+    working|down) echo "$w" ;;
+    starting)
+      now="$(date +%s)"
+      age=$(( now - $(stat -f %m "$BACKEND_WORD" 2>/dev/null || echo 0) ))
+      if (( age > ${BRO_STARTING_TIMEOUT:-60} )); then
+        echo down
+      else
+        echo starting
+      fi
+      ;;
     *) echo ready ;;
   esac
 }
@@ -31,7 +43,7 @@ settle() {
   # A fresh hint (e.g. bro-talk's "listening" set just before the mic truly
   # opens) outruns the vox state file — honour it for a few seconds instead
   # of flapping back to ready.
-  owner="$(tr -d '[:space:]' <"$OWNER" 2>/dev/null || echo idle)"
+  owner="$(tr -d '[:space:]' 2>/dev/null <"$OWNER" || echo idle)"
   if [[ "$owner" == hint ]]; then
     now="$(date +%s)"
     age=$(( now - $(stat -f %m "$WORD" 2>/dev/null || echo 0) ))

@@ -864,3 +864,133 @@ printf 'y\ny\ny\ny\ny\ny\ny\n' | BRO_HOME="$VF_HOME" "$ROOT/bin/bro-verify" >/de
   || fail "re-answering an item left duplicate lines in verify.md"
 grep -q '^- daemon: pass' "$VF_HOME/verify.md" || fail "the newer answer did not replace the older one"
 pass "bro-verify records the keyboard checklist, latest answer wins, failures exit non-zero"
+
+# Honest backend states. bro-shell retries a crashing backend with backoff and
+# says down while waiting; a missing binary says down at once instead of
+# sitting on "starting" forever.
+SH_HOME="$TMP/shell-home"
+SH_FAKEHOME="$TMP/shell-fakehome"
+mkdir -p "$SH_HOME/bin" "$SH_HOME/logs" "$SH_FAKEHOME"
+cp "$ROOT/bin/bro-status" "$ROOT/bin/bro-status-paint" "$SH_HOME/bin/"
+# A 'grok' that crashes immediately, every time.
+cat >"$TMP/bin/grok" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$TMP/bin/grok"
+PATH="$TMP/bin:$PATH" HOME="$SH_FAKEHOME" BRO_HOME="$SH_HOME" BRO_BACKEND=grok \
+  BRO_RETRY_BASE=1 BRO_RETRY_CAP=2 "$ROOT/bin/bro-shell" >/dev/null 2>&1 &
+shell_pid=$!
+sleep 4
+kill "$shell_pid" 2>/dev/null || true
+wait "$shell_pid" 2>/dev/null || true
+attempts="$(grep -c 'launch attempt' "$SH_HOME/logs/backend.log" || true)"
+[[ "$attempts" -ge 2 ]] || fail "a crashing backend was not retried (attempts: $attempts)"
+grep -q 'exited rc=1' "$SH_HOME/logs/backend.log" || fail "the crash was not logged with its exit code"
+[[ "$(cat "$SH_HOME/state/status-backend-word")" == down ]] \
+  || fail "the bar did not read down while the backend waited to retry"
+pass "bro-shell retries a crashing backend with backoff and the bar says down"
+
+# Missing binary: down immediately, and the log names the fix.
+MISS_HOME="$TMP/miss-home"
+mkdir -p "$MISS_HOME/bin" "$MISS_HOME/logs"
+cp "$ROOT/bin/bro-status" "$ROOT/bin/bro-status-paint" "$MISS_HOME/bin/"
+PATH="/usr/bin:/bin" HOME="$SH_FAKEHOME" BRO_HOME="$MISS_HOME" BRO_BACKEND=grok \
+  "$ROOT/bin/bro-shell" >/dev/null 2>&1 &
+miss_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ "$(cat "$MISS_HOME/state/status-backend-word" 2>/dev/null)" == down ]] && break
+  sleep 0.1
+done
+kill "$miss_pid" 2>/dev/null || true
+wait "$miss_pid" 2>/dev/null || true
+[[ "$(cat "$MISS_HOME/state/status-backend-word")" == down ]] \
+  || fail "a missing backend binary did not set the word down"
+grep -q 'grok not found' "$MISS_HOME/logs/backend.log" || fail "the log did not name the missing binary"
+pass "a missing backend binary says down instead of starting forever"
+
+# A 'starting' that never lands becomes down after the timeout; a fresh one
+# stays starting. The retry loop rewrites starting on each attempt, so a
+# retrying backend flips itself back without help.
+ST_HOME="$TMP/stale-home"
+mkdir -p "$ST_HOME/bin" "$ST_HOME/state"
+cp "$ROOT/bin/bro-status-loop" "$ROOT/bin/bro-status-paint" "$ST_HOME/bin/"
+printf 'call\n' >"$ST_HOME/state/mode"
+printf 'starting\n' >"$ST_HOME/state/status-backend-word"
+touch -t 202001010000 "$ST_HOME/state/status-backend-word"
+cat >"$TMP/vox/state/state.json" <<'EOF'
+{"state":"idle","microphone_open":false}
+EOF
+PATH="$TMP/bin:$PATH" BRO_HOME="$ST_HOME" VOX_STATE="$TMP/vox/state/state.json" \
+  BRO_STATUS_INTERVAL=0.05 BRO_STARTING_TIMEOUT=2 "$ST_HOME/bin/bro-status-loop" &
+stale_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == down ]] && break
+  sleep 0.1
+done
+[[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == down ]] || fail "a stale starting did not become down"
+printf 'starting\n' >"$ST_HOME/state/status-backend-word"
+sleep 0.3
+[[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == starting ]] || fail "a fresh starting was demoted too early"
+kill "$stale_pid"
+wait "$stale_pid" 2>/dev/null || true
+pass "a stale starting becomes down after the timeout, a fresh one stays starting"
+
+# bro-doctor: ✓/✗ with the fix attached, non-zero exit when anything is down.
+DOC_HOME="$TMP/doc-home"
+mkdir -p "$DOC_HOME/bin" "$DOC_HOME/logs" "$DOC_HOME/state" "$DOC_HOME/inbox/pending" "$DOC_HOME/inbox/claimed" "$DOC_HOME/inbox/done"
+cp "$ROOT/bin/bro-doctor" "$DOC_HOME/bin/"
+printf 'ready\n' >"$DOC_HOME/state/status-word"
+printf 'grok\n' >"$DOC_HOME/state/backend"
+cat >"$DOC_HOME/bin/bro-daemon" <<'EOF'
+#!/usr/bin/env bash
+echo 'plist: installed (/tmp/x)'
+echo 'launchd: loaded (gui/501/com.bro.backend)'
+echo 'supervisor: running (pid 42)'
+EOF
+chmod +x "$DOC_HOME/bin/bro-daemon"
+mkdir -p "$DOC_HOME/dist/BroBar.app/Contents/MacOS"
+printf '#!/usr/bin/env bash\n' >"$DOC_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
+chmod +x "$DOC_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
+cat >"$TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$TMP/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+echo '{}'
+EOF
+cat >"$TMP/bin/codesign" <<'EOF'
+#!/usr/bin/env bash
+echo 'Authority=Vox Local Signing'
+EOF
+cat >"$TMP/bin/grok" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$TMP/bin/"*
+doc_out="$(PATH="$TMP/bin:$PATH" BRO_HOME="$DOC_HOME" BRO_TMUX_SOCKET=bro-doc "$DOC_HOME/bin/bro-doctor")" \
+  || fail "a healthy rigged machine made doctor exit non-zero"
+grep -q '✓ backend binary: grok' <<<"$doc_out" || fail "doctor did not find the backend binary"
+grep -q '✓ vox voice service' <<<"$doc_out" || fail "doctor did not reach the rigged vox"
+grep -q '✓ BroBar built and signed' <<<"$doc_out" || fail "doctor did not accept the signed bar"
+grep -q '✓ launchd daemon owns the backend' <<<"$doc_out" || fail "doctor did not see the daemon"
+grep -q '✓ inbox queue empty' <<<"$doc_out" || fail "doctor was unhappy with an empty queue"
+grep -q 'nothing broken' <<<"$doc_out" || fail "a healthy rigged machine did not get a clean bill"
+# A down backend is a ✗ with the log line and the fix, and flips the exit code.
+printf 'down\n' >"$DOC_HOME/state/status-word"
+echo '[bro-backend 22:00:00] exited rc=1 — retry 3 in 40s' >"$DOC_HOME/logs/backend.log"
+if doc_bad="$(PATH="$TMP/bin:$PATH" BRO_HOME="$DOC_HOME" BRO_TMUX_SOCKET=bro-doc "$DOC_HOME/bin/bro-doctor")"; then
+  fail "doctor exited zero on a down backend"
+fi
+grep -q '✗ backend is down' <<<"$doc_bad" || fail "doctor did not flag the down backend"
+grep -q 'exited rc=1' <<<"$doc_bad" || fail "doctor did not quote the cause"
+# A stale claimed note (claimed >1h, never done) is a ✗ too.
+printf 'id=x\nstate=claimed\n' >"$DOC_HOME/inbox/claimed/x.md"
+touch -t 202001010000 "$DOC_HOME/inbox/claimed/x.md"
+printf 'ready\n' >"$DOC_HOME/state/status-word"
+if doc_stale="$(PATH="$TMP/bin:$PATH" BRO_HOME="$DOC_HOME" BRO_TMUX_SOCKET=bro-doc "$DOC_HOME/bin/bro-doctor")"; then
+  fail "doctor exited zero with a stale claimed note"
+fi
+grep -q 'claimed but never finished' <<<"$doc_stale" || fail "doctor did not flag the stale claim"
+pass "bro-doctor checks the whole machine story and fails loudly with the fix attached"

@@ -7,9 +7,9 @@ WORD="$STATE/status-word"
 LINE="$STATE/status-line"
 FRAME="$STATE/status-frame"
 
-word="$(tr -d '[:space:]' <"$WORD" 2>/dev/null || echo ready)"
-mode="$(tr -d '[:space:]' <"$STATE/mode" 2>/dev/null || echo call)"
-n="$(tr -d '[:space:]' <"$FRAME" 2>/dev/null || echo 0)"
+word="$(tr -d '[:space:]' 2>/dev/null <"$WORD" || echo ready)"
+mode="$(tr -d '[:space:]' 2>/dev/null <"$STATE/mode" || echo call)"
+n="$(tr -d '[:space:]' 2>/dev/null <"$FRAME" || echo 0)"
 [[ "$n" =~ ^[0-9]+$ ]] || n=0
 
 spiners='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -37,6 +37,8 @@ case "$word" in
     color='#c678dd'; mark="$wave"; label='speaking' ;;
   listening)
     color='#61afef'; mark="$dot"; label='listening' ;;
+  down)
+    color='#e06c75'; mark=''; label='down' ;;
   ready)
     color='#7dcea0'; mark=''; label='ready' ;;
   *)
