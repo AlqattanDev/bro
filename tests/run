@@ -812,14 +812,16 @@ grep -q 'Mic is LIVE — click to stop listening.' "$BAR" \
   || fail "Vox's live-mic tooltip was lost"
 grep -q 'mic.fill' "$BAR" || fail "the red live-mic glyph was lost"
 grep -q 'waveform.badge.mic' "$BAR" || fail "the speak-and-listen (barge-in) glyph was lost"
-grep -q 'showVoiceMenu' "$BAR" || fail "the voice controls have no way to be opened"
+grep -q 'panelMoreMenu' "$BAR" || fail "the voice controls have no way to be opened"
 grep -q "Show Vox's own menu bar icon" "$BAR" \
   || fail "hiding Vox's icon must be reversible from bro's menu"
 grep -q 'panel.toggle()' "$BAR" || fail "a menu-bar click no longer opens the panel"
 grep -q 'bundleIdentifier == "com.bro.brobar"' "$ROOT/macos/main.swift" \
   || fail "BroBar does not refuse to launch a second copy"
-grep -q 'BroSummon.run(\["voice"\])' "$ROOT/macos/BroPanel.swift" \
+grep -q 'controls?.panelTalk()' "$ROOT/macos/BroPanel.swift" \
   || fail "the panel has no Talk action"
+grep -q 'BroSummon.run(\["voice"\])' "$BAR" \
+  || fail "the Talk path no longer reaches bin/bro-talk"
 
 # Vox's half of the handoff, when this machine has the vox-mcp checkout.
 VOXSRC="${VOX_SRC:-$HOME/vox-mcp/macos/VoxStatus.swift}"

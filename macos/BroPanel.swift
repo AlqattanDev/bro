@@ -174,6 +174,18 @@ enum BroMarkdown {
 
 // MARK: - Panel
 
+/// What the action row needs from BroBar. The panel stays dumb: it draws the
+/// buttons; every action and every piece of live state comes through here.
+protocol PanelControls: AnyObject {
+    var voxState: VoxSnapshot { get }
+    func hotkeyLabel(_ id: UInt32) -> String
+    func panelTalk()
+    func panelType()
+    func panelSend()
+    func panelStop()
+    func panelMoreMenu() -> NSMenu
+}
+
 /// Never key, never main. Ordering this in front must not move the keyboard.
 final class AnswerPanel: NSPanel {
     override var canBecomeKey: Bool { false }
@@ -186,12 +198,17 @@ final class BroPanel {
     private static let width: CGFloat = 520
     private static let inset: CGFloat = 16
     private static let minHeight: CGFloat = 90
-    private static let footerHeight: CGFloat = 40
+    private static let rowHeight: CGFloat = 58
+
+    weak var controls: PanelControls?
 
     private let panel: AnswerPanel
     private let scroll = NSScrollView()
     private let textView = NSTextView()
-    private let talkButton = NSButton(title: "Talk", target: nil, action: nil)
+    private let actionRow = NSStackView()
+    /// The row's current shape (button titles), so a poll only rebuilds the
+    /// buttons when the vox state actually changed what should be on them.
+    private var rowShape: [String] = []
     private var timer: Timer?
     private var escMonitors: [Any] = []
     /// Last (state, content stamp) acted on, so the poll costs one stat call
@@ -245,21 +262,16 @@ final class BroPanel {
         scroll.autohidesScrollers = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        talkButton.bezelStyle = .rounded
-        talkButton.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        talkButton.target = self
-        talkButton.action = #selector(talk)
-        talkButton.refusesFirstResponder = true
-        talkButton.toolTip = "Open the mic"
-        talkButton.translatesAutoresizingMaskIntoConstraints = false
+        // The old right-click menu, flattened into the panel: a horizontal row
+        // of icon buttons with a short label under each, above the answer.
+        actionRow.orientation = .horizontal
+        actionRow.distribution = .fillEqually
+        actionRow.spacing = 4
+        actionRow.translatesAutoresizingMaskIntoConstraints = false
 
-        let footer = NSView()
-        footer.translatesAutoresizingMaskIntoConstraints = false
-        footer.addSubview(talkButton)
-
+        blur.addSubview(actionRow)
         blur.addSubview(scroll)
-        blur.addSubview(footer)
-        // Dismiss is the text, not the whole card — Talk has to stay clickable.
+        // Dismiss is the text, not the whole card — the buttons stay clickable.
         let click = NSClickGestureRecognizer(target: self, action: #selector(clicked))
         scroll.addGestureRecognizer(click)
 
@@ -272,19 +284,63 @@ final class BroPanel {
             blur.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             blur.topAnchor.constraint(equalTo: root.topAnchor),
             blur.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            actionRow.leadingAnchor.constraint(equalTo: blur.leadingAnchor, constant: 12),
+            actionRow.trailingAnchor.constraint(equalTo: blur.trailingAnchor, constant: -12),
+            actionRow.topAnchor.constraint(equalTo: blur.topAnchor, constant: 8),
+            actionRow.heightAnchor.constraint(equalToConstant: BroPanel.rowHeight - 12),
             scroll.leadingAnchor.constraint(equalTo: blur.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: blur.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: blur.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
-            footer.leadingAnchor.constraint(equalTo: blur.leadingAnchor),
-            footer.trailingAnchor.constraint(equalTo: blur.trailingAnchor),
-            footer.bottomAnchor.constraint(equalTo: blur.bottomAnchor),
-            footer.heightAnchor.constraint(equalToConstant: BroPanel.footerHeight),
-            talkButton.leadingAnchor.constraint(equalTo: footer.leadingAnchor, constant: 12),
-            talkButton.centerYAnchor.constraint(equalTo: footer.centerYAnchor),
+            scroll.topAnchor.constraint(equalTo: actionRow.bottomAnchor, constant: 4),
+            scroll.bottomAnchor.constraint(equalTo: blur.bottomAnchor),
         ])
         panel.contentView = root
         panel.alphaValue = 0
+    }
+
+    // MARK: Action row
+
+    /// Rebuild the buttons only when the state changed what they should say.
+    /// Talk and Type always; Send while the mic is live; Stop while Vox is
+    /// speaking; More for the Vox plumbing. The global hotkeys are printed on
+    /// the buttons, so the panel doubles as the cheat sheet for the keys.
+    private func refreshRow() {
+        guard let controls else { return }
+        let vox = controls.voxState
+        var spec: [(String, String, Selector)] = [
+            ("Talk  \(controls.hotkeyLabel(BroHotKey.voiceID))", "mic.fill", #selector(talk)),
+            ("Type  \(controls.hotkeyLabel(BroHotKey.textID))", "keyboard", #selector(typeToBro)),
+        ]
+        if vox.micOpen {
+            spec.append(("Send", "arrow.up.circle.fill", #selector(send)))
+        }
+        if vox.state == "speaking" {
+            spec.append(("Stop", "stop.fill", #selector(stopSpeech)))
+        }
+        spec.append(("More", "ellipsis.circle", #selector(more(_:))))
+
+        let shape = spec.map { $0.0 }
+        if shape == rowShape { return }
+        rowShape = shape
+        for view in actionRow.arrangedSubviews {
+            actionRow.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        for (title, symbol, action) in spec {
+            actionRow.addArrangedSubview(rowButton(title, symbol: symbol, action: action))
+        }
+    }
+
+    private func rowButton(_ title: String, symbol: String, action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.isBordered = false
+        button.imagePosition = .imageAbove
+        button.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        button.refusesFirstResponder = true
+        if #available(macOS 11.0, *) {
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
+                .withSymbolConfiguration(.init(pointSize: 16, weight: .regular))
+        }
+        return button
     }
 
     /// Menu-bar click. Writes the same file `bro-show --toggle` does, so the
@@ -310,6 +366,7 @@ final class BroPanel {
     private func poll() {
         let want = readWord(BroPaths.showState, fallback: "closed") == "open"
         if want {
+            refreshRow()
             reloadIfChanged()
             if !shownState { show() }
         } else if shownState {
@@ -346,7 +403,7 @@ final class BroPanel {
             height = layout.usedRect(for: container).height + 30
         }
         height = min(max(height, BroPanel.minHeight), visible.height * 0.66)
-        height += BroPanel.footerHeight
+        height += BroPanel.rowHeight
         panel.setFrame(
             NSRect(
                 x: visible.maxX - BroPanel.width - BroPanel.inset,
@@ -405,8 +462,14 @@ final class BroPanel {
         dismiss()
     }
 
-    @objc private func talk() {
-        BroSummon.run(["voice"])
+    @objc private func talk() { controls?.panelTalk() }
+    @objc private func typeToBro() { controls?.panelType() }
+    @objc private func send() { controls?.panelSend() }
+    @objc private func stopSpeech() { controls?.panelStop() }
+
+    @objc private func more(_ sender: NSButton) {
+        guard let menu = controls?.panelMoreMenu() else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
     /// Esc. A borderless non-key panel never receives keystrokes itself, so the

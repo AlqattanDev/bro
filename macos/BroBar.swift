@@ -357,10 +357,11 @@ final class BroBar: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(clicked)
-        // Right-click has to reach the same action, or the voice controls that
-        // used to live in Vox's popover would be unreachable.
+        // Right-click reaches the same action: both clicks open the panel, and
+        // only the mic-open left-click differs (it ends the turn instead).
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
+        panel.controls = self
         panel.start()
         registerHotKeys()
         // One icon in the menu bar: from here on Vox draws none.
@@ -395,23 +396,19 @@ final class BroBar: NSObject, NSApplicationDelegate {
         rendered = next
 
         guard let button = statusItem.button else { return }
-        let title = NSMutableAttributedString(
-            string: "● ",
-            attributes: [
-                .foregroundColor: color(for: word),
-                .font: NSFont.systemFont(ofSize: 11),
-            ]
-        )
-        title.append(NSAttributedString(
-            string: prefix(for: mode) + word + queueSuffix(depth, word: word),
+        // Icon only: the word moved into the tooltip and the panel. The one
+        // piece of text that survives is the queue superscript, because a
+        // stacked queue is exactly when a glance has to say "more than one".
+        let suffix = queueSuffix(depth, word: word).trimmingCharacters(in: .whitespaces)
+        button.attributedTitle = NSAttributedString(
+            string: suffix.isEmpty ? "" : " " + suffix,
             attributes: [
                 .foregroundColor: NSColor.labelColor,
                 .font: NSFont.menuBarFont(ofSize: 0),
             ]
-        ))
-        button.attributedTitle = title
-        button.image = voiceGlyph(voice)
-        button.imagePosition = button.image == nil ? .noImage : .imageLeading
+        )
+        button.image = statusGlyph(word: word, mode: mode, vox: voice)
+        button.imagePosition = suffix.isEmpty ? .imageOnly : .imageLeading
         button.toolTip = tooltip(
             word: word, mode: mode, depth: depth,
             backend: backend, reminder: reminder, vox: voice
@@ -447,39 +444,46 @@ final class BroBar: NSObject, NSApplicationDelegate {
             .trimmingCharacters(in: .whitespaces) ?? ""
     }
 
-    /// The half of Vox's icon that bro's word cannot say.
-    ///
-    /// Only those states get a glyph: "speaking", "working" and "ready" are
-    /// already the word next to it, and drawing a symbol for them too would just
-    /// say everything twice again. The live-mic red is copied from Vox exactly,
-    /// pixels and all — see applyStatusGlyph in ~/vox-mcp/macos/VoxStatus.swift
-    /// for why the colour is baked rather than left to the system to tint.
-    private func voiceGlyph(_ vox: VoxSnapshot) -> NSImage? {
-        let symbol: String
-        var live = false
+    /// The whole story in one glyph, in bro's palette. A live microphone
+    /// always wins and is always red — that red is copied from Vox exactly,
+    /// see applyStatusGlyph in ~/vox-mcp/macos/VoxStatus.swift for why the
+    /// colour is baked rather than left to the system to tint. Below that,
+    /// each backend word gets its own shape, not just its own colour, so the
+    /// state reads at a glance without any text. A Vox that died only shows
+    /// through when bro is otherwise ready — a warning must not mask working
+    /// or down; the tooltip carries the rest.
+    private func statusGlyph(word: String, mode: String, vox: VoxSnapshot) -> NSImage? {
+        var symbol: String
+        var tint = color(for: word)
+        var size: CGFloat = 13
+
         if vox.bargeIn {
-            symbol = "waveform.badge.mic"; live = true
+            symbol = "waveform.badge.mic"; tint = .systemRed
         } else if vox.micOpen {
-            symbol = "mic.fill"; live = true
-        } else if !vox.reachable {
-            // Nothing at all until Vox has been seen once: a machine without it
-            // must not grow a permanent warning triangle.
-            guard self.vox.everReachable else { return nil }
-            symbol = "exclamationmark.triangle"
+            symbol = "mic.fill"; tint = .systemRed
         } else {
-            switch vox.state {
-            case "paused": symbol = "pause.circle"
-            case "off": symbol = "mic.slash.circle"
-            case "error", "offline": symbol = "exclamationmark.triangle"
-            default: return nil
+            switch word {
+            case "starting": symbol = "circle.dotted"
+            case "working": symbol = "gearshape.fill"
+            case "speaking": symbol = "speaker.wave.2.fill"
+            case "listening": symbol = "waveform"
+            case "down": symbol = "xmark.octagon.fill"
+            case "nudge": symbol = "bell.fill"
+            default:
+                // ready — and the only moment quiet enough to surface trouble
+                // or quiet hours instead of the green dot.
+                if !vox.reachable, self.vox.everReachable {
+                    symbol = "exclamationmark.triangle.fill"; tint = .systemOrange
+                } else if mode == "quiet" {
+                    symbol = "moon.fill"; tint = .secondaryLabelColor
+                } else {
+                    symbol = "circle.fill"; size = 9
+                }
             }
         }
-        let darkMenuBar = UserDefaults.standard.string(forKey: "AppleInterfaceStyle")?
-            .lowercased() == "dark"
-        let glyphColor: NSColor = live ? .systemRed : (darkMenuBar ? .white : .black)
-        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [glyphColor]))
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol)?
+        let config = NSImage.SymbolConfiguration(pointSize: size, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: word)?
             .withSymbolConfiguration(config)
         image?.isTemplate = false
         return image
@@ -511,7 +515,7 @@ final class BroBar: NSObject, NSApplicationDelegate {
         if !reminder.isEmpty { extras.append("next: \(reminder)") }
         let extraText = extras.isEmpty ? "" : " [\(extras.joined(separator: " · "))]"
         let voiceLine = detail.isEmpty ? "" : " \(detail)"
-        return head + voiceLine + extraText + " Right-click for voice controls."
+        return head + voiceLine + extraText
     }
 
     /// Vox's panelDetail(), which is what its tooltip appended.
@@ -611,58 +615,31 @@ final class BroBar: NSObject, NSApplicationDelegate {
 
     /// Vox's statusItemClicked, on bro's item.
     ///
-    /// A left-click while the microphone is live ends the turn — it preserves
-    /// what was said and sends it to transcription, unlike cancel. That was the
-    /// fix for "I can stop talking but you can't stop listening", and it would
-    /// have been the first thing lost by hiding Vox's icon. Everything else is
-    /// bro's own wake, and a right-click opens the voice controls.
+    /// One surface: any click opens the panel, whose action row carries what
+    /// the old right-click menu held. The single exception is load-bearing —
+    /// a left-click while the microphone is live ends the turn, preserving
+    /// what was said and sending it to transcription. That was the fix for
+    /// "I can stop talking but you can't stop listening". A right-click still
+    /// opens the panel even mid-turn, where the row shows Send instead.
     @objc private func clicked() {
         let event = NSApp.currentEvent
         let rightClick = event?.type == .rightMouseUp
             || (event?.modifierFlags.contains(.control) ?? false)
-        if rightClick {
-            showVoiceMenu()
-            return
-        }
-        if vox.snapshot.micOpen {
+        if vox.snapshot.micOpen, !rightClick {
             vox.send("end_turn")
             return
         }
         panel.toggle()
     }
 
-    /// Two sections, every line self-explanatory. BRO on top: the same two
-    /// summons the global hotkeys fire, with those hotkeys printed on the
-    /// items so the menu doubles as the cheat sheet. VOX below the divider:
-    /// the plumbing, out of the way. There is no Wake, no Reply and no note
-    /// mailbox — bro is always awake, and "Talk to bro" goes straight through
-    /// bin/bro-talk to the inbox, so bro answers instead of collecting mail.
-    private func showVoiceMenu() {
+    /// The Vox plumbing behind the panel's More button: voice mode, on/off,
+    /// the icon claim, the folder. Everything that is about the voice engine
+    /// rather than about talking to bro.
+    func panelMoreMenu() -> NSMenu {
         let voice = vox.snapshot
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let keys = BroHotKey.load()
 
-        menu.addItem(header("BRO"))
-        let talk = item("Talk to bro", #selector(summonVoiceFromMenu), symbol: "mic.fill")
-        shortcut(talk, keys.first { $0.id == BroHotKey.voiceID })
-        menu.addItem(talk)
-        let type = item("Type to bro", #selector(summonTextFromMenu), symbol: "keyboard")
-        shortcut(type, keys.first { $0.id == BroHotKey.textID })
-        menu.addItem(type)
-        if voice.reachable {
-            if voice.state == "speaking" {
-                menu.addItem(item("Stop reading", #selector(voiceCancel), symbol: "stop.fill"))
-            }
-            if voice.micOpen {
-                menu.addItem(item(
-                    "Stop listening — send what I said", #selector(voiceEndTurn), symbol: "mic.slash.fill"
-                ))
-            }
-        }
-
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(header("VOX — voice engine"))
         if voice.reachable {
             let modes = NSMenu()
             modes.autoenablesItems = false
@@ -690,26 +667,19 @@ final class BroBar: NSObject, NSApplicationDelegate {
             menu.addItem(dead)
         }
 
-        let more = NSMenu()
-        more.autoenablesItems = false
+        menu.addItem(NSMenuItem.separator())
         // The escape hatch that makes hiding Vox's icon safe rather than final:
         // Vox's own item — and with it its panel, its restart control and
         // anything bro has not mirrored — is one click away, and comes back
         // within a second because the claim file is simply gone.
-        more.addItem(item(
+        menu.addItem(item(
             claimingStatusBar ? "Show Vox's own menu bar icon" : "Hide Vox's menu bar icon (bro shows it)",
             #selector(toggleStatusClaim)
         ))
-        more.addItem(item("Open the Vox folder", #selector(openVoxFolder)))
-        let moreItem = item("More", nil, symbol: "ellipsis.circle")
-        moreItem.submenu = more
-        menu.addItem(moreItem)
+        menu.addItem(item("Open the Vox folder", #selector(openVoxFolder)))
 
         target(menu)
-        // popUp, not statusItem.menu: assigning a menu would take the click away
-        // from the action above, and the left-click end-turn would be gone.
-        guard let button = statusItem.button else { return }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+        return menu
     }
 
     private func item(_ title: String, _ action: Selector?, symbol: String? = nil) -> NSMenuItem {
@@ -718,28 +688,6 @@ final class BroBar: NSObject, NSApplicationDelegate {
             entry.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         }
         return entry
-    }
-
-    /// A small-caps section label, native where the OS has one.
-    private func header(_ title: String) -> NSMenuItem {
-        if #available(macOS 14.0, *) { return NSMenuItem.sectionHeader(title: title) }
-        let entry = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        entry.isEnabled = false
-        return entry
-    }
-
-    /// Print the global hotkey on the item, right-aligned the way every menu
-    /// does it — display only; the real registration is Carbon's, in
-    /// registerHotKeys, and honors the same hotkeys file overrides.
-    private func shortcut(_ entry: NSMenuItem, _ key: BroHotKey?) {
-        guard let key, let ch = key.label.last else { return }
-        entry.keyEquivalent = String(ch).lowercased()
-        var flags: NSEvent.ModifierFlags = []
-        if key.modifiers & UInt32(optionKey) != 0 { flags.insert(.option) }
-        if key.modifiers & UInt32(controlKey) != 0 { flags.insert(.control) }
-        if key.modifiers & UInt32(shiftKey) != 0 { flags.insert(.shift) }
-        if key.modifiers & UInt32(cmdKey) != 0 { flags.insert(.command) }
-        entry.keyEquivalentModifierMask = flags
     }
 
     /// Point every actionable item, submenus included, at self. The old
@@ -751,11 +699,6 @@ final class BroBar: NSObject, NSApplicationDelegate {
             if let sub = entry.submenu { target(sub) }
         }
     }
-
-    // The menu fires the exact same paths as the ⌥§ / ⌃§ hotkeys — one intent,
-    // one implementation, whichever way Ali reaches for it.
-    @objc private func summonVoiceFromMenu() { hotKeyFired(id: BroHotKey.voiceID) }
-    @objc private func summonTextFromMenu() { hotKeyFired(id: BroHotKey.textID) }
 
     @objc private func voiceCancel() { vox.send("cancel") }
     @objc private func voiceEndTurn() { vox.send("end_turn") }
@@ -784,6 +727,21 @@ final class BroBar: NSObject, NSApplicationDelegate {
         _ = StatusHostClaim.release()
     }
 
+}
+
+// The panel's action row, wired to the same paths the hotkeys fire — one
+// intent, one implementation, whichever way Ali reaches for it.
+extension BroBar: PanelControls {
+    var voxState: VoxSnapshot { vox.snapshot }
+
+    func hotkeyLabel(_ id: UInt32) -> String {
+        BroHotKey.load().first { $0.id == id }?.label ?? ""
+    }
+
+    func panelTalk() { hotKeyFired(id: BroHotKey.voiceID) }
+    func panelType() { hotKeyFired(id: BroHotKey.textID) }
+    func panelSend() { vox.send("end_turn") }
+    func panelStop() { vox.send("cancel") }
 }
 // The entry point lives in macos/main.swift: once this app is more than one
 // file, Swift only allows top-level statements there.
