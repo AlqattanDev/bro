@@ -1,22 +1,46 @@
 #!/usr/bin/env bash
-# Write clean content for the user overlay and optionally pop it up.
+# Write clean content for the user overlay and put it on screen.
+#
+# The screen surface is the floating panel (macos/BroPanel.swift, running
+# inside BroBar): always on top, over every app, never takes focus. This script
+# only writes two files — show/current.md for the content and show/panel for
+# "open"/"closed" — and the panel polls them. No tmux, no terminal required.
+#
+# The old nvim board is still here under --board, for editing and scrollback;
+# `bro board` is the front door for it.
+#
 # Usage:
 #   bro-show "title" <<'EOF'
 #   content here
 #   EOF
 #   bro-show --file path.md
-#   bro-show --open     # just open whatever is current
+#   bro-show --open | --toggle | --close   # panel
+#   bro-show --board                       # nvim overlay in the bro session
 #   bro-show --clear
 set -euo pipefail
 
 BRO_HOME="${BRO_HOME:-$HOME/.bro}"
 SHOW_DIR="$BRO_HOME/show"
 CURRENT="$SHOW_DIR/current.md"
+PANEL="$SHOW_DIR/panel"
 SOCKET="${BRO_TMUX_SOCKET:-bro}"
 SESSION="${BRO_SESSION:-bro}"
 mkdir -p "$SHOW_DIR"
 
-open_overlay() {
+panel_state() {
+  # Quiet when the file has never been written: "no state" is just "closed".
+  { cat "$PANEL" 2>/dev/null || true; } | tr -d '[:space:]'
+}
+
+panel_open() {
+  printf 'open\n' >"$PANEL"
+}
+
+panel_close() {
+  printf 'closed\n' >"$PANEL"
+}
+
+open_board() {
   # Clean viewer: only the board, no chat chrome. q or Esc to close (less: q).
   if ! tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
     echo "bro session not running" >&2
@@ -34,32 +58,36 @@ open_overlay() {
 
 case "${1:-}" in
   --open|open)
-    open_overlay
+    panel_open
     exit 0
     ;;
   --toggle|toggle)
-    width="$(tmux -L "$SOCKET" display-message -p '#{popup_width}' 2>/dev/null || true)"
-    if [[ -n "${width:-}" ]]; then
-      tmux -L "$SOCKET" display-popup -C
+    if [[ "$(panel_state)" == open ]]; then
+      panel_close
     else
-      open_overlay
+      panel_open
     fi
     exit 0
     ;;
   --close|close)
-    tmux -L "$SOCKET" display-popup -C 2>/dev/null || true
+    panel_close
+    exit 0
+    ;;
+  --board|board)
+    open_board
     exit 0
     ;;
   --clear|clear)
     cat >"$CURRENT" <<'EOF'
 (nothing to show)
 EOF
+    panel_close
     echo "cleared"
     exit 0
     ;;
   --file)
     cp "$2" "$CURRENT"
-    open_overlay
+    panel_open
     exit 0
     ;;
   --write-only)
@@ -74,7 +102,7 @@ EOF
     ;;
   "")
     echo "usage: bro-show TITLE  (then content on stdin)" >&2
-    echo "       bro-show --open | --clear | --file PATH" >&2
+    echo "       bro-show --open | --toggle | --close | --board | --clear | --file PATH" >&2
     exit 2
     ;;
   *)
@@ -84,6 +112,6 @@ EOF
       echo ""
       cat
     } >"$CURRENT"
-    open_overlay
+    panel_open
     ;;
 esac

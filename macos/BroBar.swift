@@ -72,6 +72,9 @@ extension NSColor {
 final class BroBar: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
+    /// The floating answer panel (macos/BroPanel.swift) lives in this same
+    /// process: one binary, one pidfile, one thing for bin/bro to supervise.
+    private let panel = BroPanel()
     /// Last rendered (word, mode). The status item is only touched when this
     /// changes, so the common case — nothing happening — costs two file reads.
     private var rendered: (word: String, mode: String)?
@@ -80,6 +83,8 @@ final class BroBar: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(clicked)
+
+        panel.start()
 
         refresh()
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
@@ -125,9 +130,5 @@ final class BroBar: NSObject, NSApplicationDelegate {
         try? task.run()
     }
 }
-
-let app = NSApplication.shared
-let delegate = BroBar()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
+// The entry point lives in macos/main.swift: once this app is more than one
+// file, Swift only allows top-level statements there.

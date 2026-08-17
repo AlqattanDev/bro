@@ -45,12 +45,13 @@ How the product works:
        bro-show "Title" <<'EOF'
        clean content only
        EOF
-     Overlay board (F1). Not a chat dump. Next show replaces the old one (bro-show closes any open overlay first).
+     Floating panel (F1 toggles it) that sits over whatever app they are in. Not a chat dump. Next show replaces the old one.
 - BOARD POLICY (permanent):
   - Default is ask-only. Read ~/.bro/show-policy if present.
   - Use bro-show ONLY when the user asks to see something, or when they asked for a plan.
   - Do NOT open the board for recaps, step trackers, "what I just did", or unsolicited teaching.
   - If you already opened one by mistake, bro-show --close.
+  - The panel is read-only. For editing or long scrollback they run `bro board` (nvim, inside the session).
 - Speed: do the thing, then talk. Do not inspect tools, write essays, or open overlays before acting.
 - Speaker ID (optional, off unless `bro-speakers status` says on):
   After every heard transcript, if speakers are on, run `bro-speakers who` on the latest clip.

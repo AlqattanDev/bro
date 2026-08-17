@@ -211,8 +211,12 @@ SHOW_HOME="$TMP/show-home"
 mkdir -p "$SHOW_HOME"
 printf 'old\n' | PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" \
   BRO_HOME="$SHOW_HOME" "$ROOT/bin/bro-show" 'First'
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" \
+  BRO_HOME="$SHOW_HOME" "$ROOT/bin/bro-show" --board
 printf 'new\n' | PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" \
   BRO_HOME="$SHOW_HOME" "$ROOT/bin/bro-show" 'Second'
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" \
+  BRO_HOME="$SHOW_HOME" "$ROOT/bin/bro-show" --board
 # Wait for backgrounded display-popup
 sleep 0.2
 awk '
@@ -222,6 +226,40 @@ awk '
 ' "$TMP/tmux.log" || fail "bro-show closes the old overlay before opening the next"
 grep -q '# Second' "$SHOW_HOME/show/current.md" || fail "bro-show writes the latest board"
 pass "bro-show replaces the previous overlay"
+
+# The everyday surface is the floating panel, not tmux: writing an answer must
+# reach the screen with no session, no popup, and no terminal at all.
+PANEL_HOME="$TMP/panel-home"
+mkdir -p "$PANEL_HOME"
+: >"$TMP/tmux.log"
+printf 'the answer\n' | PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" \
+  BRO_HOME="$PANEL_HOME" "$ROOT/bin/bro-show" 'Answer'
+grep -q '# Answer' "$PANEL_HOME/show/current.md" || fail "bro-show writes current.md for the panel"
+[[ "$(cat "$PANEL_HOME/show/panel")" == open ]] || fail "bro-show signals the panel open"
+[[ ! -s "$TMP/tmux.log" ]] || fail "the panel path stayed out of tmux"
+# F1 is a pure toggle of that same file, both ways.
+BRO_HOME="$PANEL_HOME" "$ROOT/bin/bro-show" --toggle
+[[ "$(cat "$PANEL_HOME/show/panel")" == closed ]] || fail "toggle closes an open panel"
+BRO_HOME="$PANEL_HOME" "$ROOT/bin/bro-show" --toggle
+[[ "$(cat "$PANEL_HOME/show/panel")" == open ]] || fail "toggle reopens a closed panel"
+BRO_HOME="$PANEL_HOME" "$ROOT/bin/bro-show" --close
+[[ "$(cat "$PANEL_HOME/show/panel")" == closed ]] || fail "--close closes the panel"
+# A panel the app has never written must toggle open, not crash on the missing file.
+rm -f "$PANEL_HOME/show/panel"
+BRO_HOME="$PANEL_HOME" "$ROOT/bin/bro-show" --toggle
+[[ "$(cat "$PANEL_HOME/show/panel")" == open ]] || fail "toggle opens when no state file exists"
+BRO_HOME="$PANEL_HOME" "$ROOT/bin/bro-show" --clear >/dev/null
+[[ "$(cat "$PANEL_HOME/show/panel")" == closed ]] || fail "--clear also dismisses the panel"
+# And the nvim board is still reachable through bro itself.
+: >"$TMP/tmux.log"
+mkdir -p "$PANEL_HOME/bin"
+cp "$ROOT/bin/bro-show" "$PANEL_HOME/bin/"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" BRO_HOME="$PANEL_HOME" \
+  "$ROOT/bin/bro" board
+sleep 0.2
+grep -q 'display-popup' "$TMP/tmux.log" || fail "bro board still opens the nvim overlay"
+grep -q 'nvim' "$TMP/tmux.log" || fail "bro board opens nvim, not something else"
+pass "bro-show drives the floating panel by file and bro board keeps the nvim overlay"
 
 SNAP_HOME="$TMP/snap-home"
 SNAP_BIN="$TMP/snap-bin"

@@ -38,6 +38,8 @@ bro — full-screen work + hidden agent + clean board
   bro quiet                        No voice
   bro call                         Voice, keep going
   bro ping                         One voice reply, then silent
+  bro board                        Open the nvim board (edit / scroll the answer)
+  bro show [--open|--close]        Toggle the floating answer panel (F1)
   bro speakers on|off|status       Cheap two-voice ID (off by default)
   bro status                       Show current talk mode
   bro --backend grok|claude|codex
@@ -49,13 +51,13 @@ bro — full-screen work + hidden agent + clean board
   bro help
 
 Keys:
-  F1   clean overlay (explanations / plans)
+  F1   floating answer panel — over any app, never steals focus (click to dismiss)
   F2   your full-screen work
   F3   snapshot your screen
   F4   talk — mic opens now, do not wait
 
 Commands run in YOUR terminal via bro-run (agent does this).
-Explanations go on the F1 board via bro-show.
+Explanations go on the F1 panel via bro-show; `bro board` opens the same text in nvim.
 
 Watch / show:
   ~/.bro/watch/latest.md
@@ -186,6 +188,16 @@ case "$cmd" in
         echo "backend: ${BRO_BACKEND:-grok} (default)"
       fi
     fi
+    ;;
+  board)
+    # The nvim board: editing and scrollback, inside the session. The floating
+    # panel (F1) is the everyday answer surface; this is the one you can scroll
+    # and search.
+    exec "$BRO_HOME/bin/bro-show" --board
+    ;;
+  show)
+    shift
+    exec "$BRO_HOME/bin/bro-show" "${@:---toggle}"
     ;;
   snapshot)
     ensure_dirs
