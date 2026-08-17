@@ -22,6 +22,10 @@ open_overlay() {
     echo "bro session not running" >&2
     return 1
   fi
+  # Next show replaces the old one. Close first or stacked nvim popups
+  # sit on top of each other and the user has to q them all, then F1.
+  tmux -L "$SOCKET" display-popup -C 2>/dev/null || true
+  sleep 0.05
   # Fire-and-forget so callers are not stuck until the user closes the popup.
   # nvim so j/k are line-by-line; q quits and closes the overlay.
   tmux -L "$SOCKET" display-popup -t "$SESSION:you" -E -w 90% -h 80% -T " bro " \

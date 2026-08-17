@@ -38,6 +38,7 @@ bro — full-screen work + hidden agent + clean board
   bro quiet                        No voice
   bro call                         Voice, keep going
   bro ping                         One voice reply, then silent
+  bro speakers on|off|status       Cheap two-voice ID (off by default)
   bro status                       Show current talk mode
   bro --backend grok|claude|codex
   bro backend                      Show current backend
@@ -182,6 +183,10 @@ case "$cmd" in
     else
       echo "mode: call (default)"
     fi
+    ;;
+  speakers)
+    shift
+    exec "$BRO_HOME/bin/bro-speakers" "$@"
     ;;
   quiet|call|ping)
     echo "$cmd" >"$MODE_FILE"

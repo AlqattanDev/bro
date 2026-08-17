@@ -37,7 +37,8 @@ case "$pane_command" in
     ;;
 esac
 
-last_line="$(tmux -L "$SOCKET" capture-pane -t "$TARGET" -p -S -1 2>/dev/null | tail -n 1)"
+# Last *non-empty* line — the prompt often sits above trailing blank rows.
+last_line="$(tmux -L "$SOCKET" capture-pane -t "$TARGET" -p 2>/dev/null | awk 'NF { line=$0 } END { print line }')"
 if [[ ! "$last_line" =~ [\$%#\>❯][[:space:]]*$ ]]; then
   echo "bro-run refused: work pane does not show an idle shell prompt" >&2
   exit 1

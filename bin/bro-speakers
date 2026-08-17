@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Cheap two-voice ID. Off unless ~/.bro/speakers/enabled is "on".
+# Usage:
+#   bro-speakers on | off | status
+#   bro-speakers enroll NAME [wav]
+#   bro-speakers who [wav]
+set -euo pipefail
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+PY=""
+for cand in \
+  "${VOX_PYTHON:-}" \
+  "$BRO_HOME/speakers/venv/bin/python" \
+  "$HOME/vox-mcp/.venv/bin/python" \
+  "$HOME/.local/bin/python3.13" \
+  "/opt/homebrew/bin/python3"
+do
+  [[ -n "$cand" && -x "$cand" ]] || continue
+  if "$cand" -c 'import numpy' >/dev/null 2>&1; then
+    PY="$cand"
+    break
+  fi
+done
+if [[ -z "$PY" ]]; then
+  echo "bro-speakers: need a python with numpy and scipy" >&2
+  exit 1
+fi
+SELF="$(cd "$(dirname "$0")" && pwd)"
+exec "$PY" "$SELF/bro-speakers.py" "$@"

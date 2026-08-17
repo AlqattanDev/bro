@@ -4,7 +4,7 @@
 
 - **Your work** — full screen terminal  
 - **Commands run here** — when you ask to *do* something (e.g. Tailscale devices), bro types the command into **your** terminal  
-- **A clean popup** — only for *explanations / plans* (not for “run this”). Not a chat log.  
+- **A clean popup** — only when you ask, or for a *plan you requested*. Not for “I ran this”. Not a chat log.  
 - **You do not look at Grok.** Grok runs hidden in the back.
 
 ## Start

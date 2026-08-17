@@ -5,9 +5,13 @@ inbox/
 show/current.md
 bro-boot-prompt.txt
 status-word
+status-backend-word
 status-line
 status-frame
 status-owner
 status-loop.pid
 /backend
 /mode
+/show-policy
+/speakers/
+__pycache__/

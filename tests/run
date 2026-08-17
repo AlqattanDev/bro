@@ -105,8 +105,10 @@ pass "every attach supervises and restarts the status loop"
 QUEUE_HOME="$TMP/queue-home"
 mkdir -p "$QUEUE_HOME/bin"
 cp "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-wake" "$QUEUE_HOME/bin/"
-BRO_HOME="$QUEUE_HOME" "$ROOT/bin/bro" first
-BRO_HOME="$QUEUE_HOME" "$ROOT/bin/bro" second
+PATH="$TMP/bin:$PATH" BRO_HOME="$QUEUE_HOME" BRO_TMUX_SOCKET=bro-test \
+  "$ROOT/bin/bro" first
+PATH="$TMP/bin:$PATH" BRO_HOME="$QUEUE_HOME" BRO_TMUX_SOCKET=bro-test \
+  "$ROOT/bin/bro" second
 pending_count="$(find "$QUEUE_HOME/inbox/pending" -type f -name '*.md' | wc -l | tr -d ' ')"
 [[ "$pending_count" -eq 2 ]] || fail "two bro notes survive in the pending queue"
 first_pending="$(find "$QUEUE_HOME/inbox/pending" -type f -name '*.md' | sort | head -1)"
@@ -138,6 +140,16 @@ PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" FAKE_PANE_COMMAND=codex \
 PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" FAKE_PANE_COMMAND=zsh FAKE_PANE_TEXT='ali@mac % ' \
   BRO_HOME="$TMP/home" "$ROOT/bin/bro-run" 'echo safe'
 grep -q 'echo safe' "$TMP/tmux.log" || fail "bro-run accepts an idle shell prompt"
+: >"$TMP/tmux.log"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" FAKE_PANE_COMMAND=zsh \
+  FAKE_PANE_TEXT=$'~\n❯\n\n\n' \
+  BRO_HOME="$TMP/home" "$ROOT/bin/bro-run" 'echo padded'
+grep -q 'echo padded' "$TMP/tmux.log" || fail "bro-run accepts a prompt above trailing blank lines"
+: >"$TMP/tmux.log"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" FAKE_PANE_COMMAND=zsh \
+  FAKE_PANE_TEXT=$'building...\nmore output\n\n' \
+  BRO_HOME="$TMP/home" "$ROOT/bin/bro-run" 'echo busy' && fail "bro-run refuses a shell with no prompt"
+[[ ! -s "$TMP/tmux.log" ]] || fail "bro-run sent keys into a busy shell"
 pass "bro-run refuses non-shell panes"
 
 : >"$TMP/tmux.log"
@@ -145,3 +157,75 @@ PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" BRO_HOME="$QUEUE_HOME" \
   "$ROOT/bin/bro-wake" queue
 grep -q ':me' "$TMP/tmux.log" || fail "backend wakeup targets the me pane"
 pass "queue updates visibly wake the backend"
+
+cat >"$TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_TMUX_LOG:-/dev/null}"
+case "$*" in
+  *"has-session"*) exit 0 ;;
+esac
+exit 0
+EOF
+chmod +x "$TMP/bin/tmux"
+: >"$TMP/tmux.log"
+SHOW_HOME="$TMP/show-home"
+mkdir -p "$SHOW_HOME"
+printf 'old\n' | PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" \
+  BRO_HOME="$SHOW_HOME" "$ROOT/bin/bro-show" 'First'
+printf 'new\n' | PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" \
+  BRO_HOME="$SHOW_HOME" "$ROOT/bin/bro-show" 'Second'
+# Wait for backgrounded display-popup
+sleep 0.2
+awk '
+  /display-popup -C/ { close_seen=1; next }
+  /display-popup/ && close_seen { open_after_close++; close_seen=0 }
+  END { if (open_after_close < 2) exit 1 }
+' "$TMP/tmux.log" || fail "bro-show closes the old overlay before opening the next"
+grep -q '# Second' "$SHOW_HOME/show/current.md" || fail "bro-show writes the latest board"
+pass "bro-show replaces the previous overlay"
+
+SPEAK="$ROOT/bin/bro-speakers"
+PY=""
+for cand in "$HOME/vox-mcp/.venv/bin/python" "$HOME/.local/bin/python3.13"; do
+  [[ -x "$cand" ]] || continue
+  if "$cand" -c 'import numpy, scipy' >/dev/null 2>&1; then
+    PY="$cand"
+    break
+  fi
+done
+if [[ -n "$PY" ]]; then
+  SPK_HOME="$TMP/speakers-home"
+  mkdir -p "$SPK_HOME"
+  "$PY" - <<PY
+import wave, struct, math
+from pathlib import Path
+import os
+os.environ["BRO_HOME"] = "$SPK_HOME"
+import runpy
+# generate two tones
+def tone(path, hz):
+    sr = 16000
+    n = sr * 2
+    with wave.open(path, "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        for i in range(n):
+            val = int(12000 * math.sin(2 * math.pi * hz * i / sr))
+            w.writeframes(struct.pack("<h", val))
+tone("$TMP/low.wav", 110)
+tone("$TMP/high.wav", 240)
+PY
+  BRO_HOME="$SPK_HOME" "$SPEAK" off >/dev/null
+  [[ "$(BRO_HOME="$SPK_HOME" "$SPEAK" who "$TMP/low.wav")" == off ]] || fail "who is off when disabled"
+  BRO_HOME="$SPK_HOME" "$SPEAK" enroll ali "$TMP/low.wav" >/dev/null
+  BRO_HOME="$SPK_HOME" "$SPEAK" enroll her "$TMP/high.wav" >/dev/null
+  BRO_HOME="$SPK_HOME" "$SPEAK" on >/dev/null
+  [[ "$(BRO_HOME="$SPK_HOME" "$SPEAK" who "$TMP/low.wav" | head -1)" == ali ]] || fail "identifies low tone as ali"
+  [[ "$(BRO_HOME="$SPK_HOME" "$SPEAK" who "$TMP/high.wav" | head -1)" == her ]] || fail "identifies high tone as her"
+  BRO_HOME="$SPK_HOME" "$SPEAK" off >/dev/null
+  [[ "$(BRO_HOME="$SPK_HOME" "$SPEAK" who "$TMP/low.wav" | head -1)" == off ]] || fail "off switch sticks"
+  pass "bro-speakers can be switched off and tells two voices apart"
+else
+  pass "bro-speakers tests skipped (no numpy python)"
+fi
