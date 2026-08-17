@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # bro-daemon — the backend's owner.
 #
-# Phase 4: the backend (hidden Grok session + watch/status loops + BroBar) is
+# Phase 4: the backend (hidden Grok session + status paint loop + BroBar) is
 # no longer owned by whatever terminal happened to start it. This script is the
 # thing launchd runs at login; the terminal is a client that attaches.
+#
+# Phase 5: this supervisor keeps the backend *alive*; it never makes it *look*.
+# There is no watch loop to tick — nothing under here captures the pane or the
+# screen on a timer. Bro looks only when asked.
 #
 #   bro-daemon run          supervise the backend in the foreground (launchd)
 #   bro-daemon install      write the LaunchAgent and bootstrap it (explicit!)
@@ -29,7 +33,7 @@ DOMAIN="gui/$(id -u)"
 PIDFILE="$BRO_HOME/daemon.pid"
 
 usage() {
-  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------- plist -----

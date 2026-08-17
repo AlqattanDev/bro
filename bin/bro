@@ -5,12 +5,15 @@
 #   bro                     start / attach the interactive session
 #   bro <message>           send a note (answers on the F1 board)
 #   bro quiet | call | ping status current mode
-#   bro snapshot            force-read your screen into watch files
-#   bro read                print what I would see (latest snapshot)
+#   bro snapshot            read your pane into watch files, right now
+#   bro read                look now and print what I see
 #   bro stop                stop everything on purpose (detaching does not)
 #   bro daemon ...          launchd LaunchAgent that owns the headless backend
 #   bro backend [grok|claude|codex]
 #   bro help
+#
+# Nothing here runs on a timer that looks at you: bro captures the pane only
+# when it is asked to, and the screen only on F3 or an explicit ask.
 set -euo pipefail
 
 export BRO_HOME="${BRO_HOME:-$HOME/.bro}"
@@ -47,7 +50,7 @@ bro — full-screen work + hidden agent + clean board
   bro backend                      Show current backend
   bro backend claude               Set default backend (saved)
   bro snapshot                     Save your pane for bro
-  bro read                         Print latest snapshot
+  bro read                         Look at your pane now and print what I see
   bro stop                         End everything (daemon, loops, bar, session)
   bro daemon install|uninstall     Run the backend at login under launchd
   bro daemon status|restart        (install is explicit — never automatic)
@@ -71,16 +74,6 @@ EOF
 
 ensure_dirs() {
   mkdir -p "$WATCH" "$BRO_HOME/logs"
-}
-
-start_watch_loop() {
-  # One watch loop per session, in the background on the machine.
-  local pidfile="$WATCH/watch.pid"
-  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-    return 0
-  fi
-  nohup "$BRO_HOME/bin/bro-watch-loop" >>"$BRO_HOME/logs/watch.log" 2>&1 &
-  echo $! >"$pidfile"
 }
 
 start_status_loop() {
@@ -134,7 +127,9 @@ stop_daemon() {
   fi
 }
 
-stop_watch_loop() {
+stop_loops() {
+  # Phase 5 removed the watch loop; a machine upgrading mid-flight can still
+  # have one running from before, so a deliberate stop reaps its pidfile too.
   local pidfile="$WATCH/watch.pid"
   if [[ -f "$pidfile" ]]; then
     kill "$(cat "$pidfile")" 2>/dev/null || true
@@ -148,17 +143,18 @@ stop_watch_loop() {
 }
 
 backend_up() {
-  # Everything bro *is* without a terminal: the loops, the menu bar face, and
-  # the detached tmux session holding the hidden backend. Safe to call over and
-  # over — every start is pidfile-guarded — which is what lets the daemon
-  # supervise it and a terminal merely join it.
+  # Everything bro *is* without a terminal: the status paint loop, the menu bar
+  # face, and the detached tmux session holding the hidden backend. Safe to
+  # call over and over — every start is pidfile-guarded — which is what lets
+  # the daemon supervise it and a terminal merely join it.
   ensure_dirs
   # If Ali installed the LaunchAgent and something booted it out (a deliberate
   # `bro stop`, say), put launchd back in charge. Never installs anything.
   if [[ -z "${BRO_DAEMON:-}" && -x "$BRO_HOME/bin/bro-daemon" ]]; then
     "$BRO_HOME/bin/bro-daemon" ensure >/dev/null 2>&1 || true
   fi
-  start_watch_loop
+  # No watch loop: nothing here captures the pane on a timer. Bro reads the
+  # pane at the moment it acts (bro-snapshot / tmux capture-pane), on demand.
   start_status_loop
   start_bro_bar
   if ! "${TMUXC[@]}" has-session -t "$SESSION" 2>/dev/null; then
@@ -240,16 +236,20 @@ case "$cmd" in
     echo "Wrote $WATCH/latest.md"
     ;;
   read)
+    # Look now, then print. There is no timer keeping latest.md warm, so
+    # reading means capturing first — that is the whole point of Phase 5.
+    ensure_dirs
+    "$BRO_HOME/bin/bro-snapshot" >/dev/null 2>&1 || true
     if [[ -f "$WATCH/latest.md" ]]; then
       cat "$WATCH/latest.md"
     else
-      echo "No snapshot yet. Run: bro snapshot"
+      echo "Nothing to read: no bro pane to capture (start with: bro)"
       exit 1
     fi
     ;;
   stop)
     stop_daemon
-    stop_watch_loop
+    stop_loops
     stop_bro_bar
     "${TMUXC[@]}" kill-session -t "$SESSION" 2>/dev/null || true
     "${TMUXC[@]}" kill-session -t bro-popup 2>/dev/null || true

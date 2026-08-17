@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Dump what bro is allowed to see.
-#   bro-snapshot            -> capture the tmux "you" pane (safe, timer-driven)
+# Nothing calls this on a timer. It runs when bro is asked to look: `bro read`,
+# `bro snapshot`, Ctrl-a r, F3, or the backend itself before it answers.
+#   bro-snapshot            -> capture the tmux "you" pane, right now, on demand
 #   bro-snapshot <target>   -> capture a specific tmux target
 #   bro-snapshot --screen   -> capture the whole screen (MANUAL ONLY: F3 / explicit ask)
 set -euo pipefail
@@ -32,8 +34,10 @@ header() {
 
 if [[ "$MODE" == screen ]]; then
   # --- privacy gate -------------------------------------------------------
-  # Screen capture is never automatic. The watch loop exports BRO_NO_SCREEN=1,
-  # so even if it were ever handed --screen it cannot take a picture.
+  # Screen capture is never automatic. Any context that is not a direct ask
+  # (a loop, a supervisor, a hook — the old watch loop set this) exports
+  # BRO_NO_SCREEN=1, and then --screen cannot take a picture no matter what
+  # hands it the flag. Defence in depth: keep this even with no loop left.
   if [[ -n "${BRO_NO_SCREEN:-}" ]]; then
     echo "screen capture refused: automatic/timer context" >&2
     exit 2

@@ -68,22 +68,18 @@ pass "status loop survives tmux absence and follows Vox through listening, speak
 SUP_HOME="$TMP/supervise-home"
 mkdir -p "$SUP_HOME/bin" "$SUP_HOME/logs" "$SUP_HOME/watch"
 cp "$ROOT/bin/bro" "$SUP_HOME/bin/"
-cat >"$SUP_HOME/bin/bro-watch-loop" <<'EOF'
-#!/usr/bin/env bash
-while true; do sleep 10; done
-EOF
 cat >"$SUP_HOME/bin/bro-status-loop" <<'EOF'
 #!/usr/bin/env bash
 while true; do sleep 10; done
 EOF
+# Phase 5: a snapshot must only ever happen because someone asked. This stub
+# records every invocation so the tests below can prove nobody is on a timer.
 cat >"$SUP_HOME/bin/bro-snapshot" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$(date +%s) $*" >>"${FAKE_SNAP_LOG:-/dev/null}"
 exit 0
 EOF
 chmod +x "$SUP_HOME/bin/"*
-sleep 30 &
-watch_pid=$!
-echo "$watch_pid" >"$SUP_HOME/watch/watch.pid"
 cat >"$TMP/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -91,25 +87,49 @@ EOF
 chmod +x "$TMP/bin/tmux"
 PATH="$TMP/bin:$PATH" BRO_HOME="$SUP_HOME" "$SUP_HOME/bin/bro" attach
 first_status_pid="$(cat "$SUP_HOME/status-loop.pid")"
-kill -0 "$first_status_pid" 2>/dev/null || fail "attach starts status loop independently of living watch loop"
+kill -0 "$first_status_pid" 2>/dev/null || fail "attach starts the status loop"
 kill "$first_status_pid"
 wait "$first_status_pid" 2>/dev/null || true
 PATH="$TMP/bin:$PATH" BRO_HOME="$SUP_HOME" "$SUP_HOME/bin/bro" attach
 second_status_pid="$(cat "$SUP_HOME/status-loop.pid")"
 [[ "$second_status_pid" != "$first_status_pid" ]] || fail "attach replaces dead status loop pid"
 kill -0 "$second_status_pid" 2>/dev/null || fail "replacement status loop is alive"
-kill "$second_status_pid" "$watch_pid" 2>/dev/null || true
-wait "$second_status_pid" "$watch_pid" 2>/dev/null || true
+kill "$second_status_pid" 2>/dev/null || true
+wait "$second_status_pid" 2>/dev/null || true
 pass "every attach supervises and restarts the status loop"
+
+# Phase 5: attaching starts a face and a queue — never an eye. There is no
+# watch loop to start, no pidfile for one, and the only loop bro runs paints
+# the status bar from local files rather than capturing anything.
+[[ ! -e "$ROOT/bin/bro-watch-loop" ]] || fail "the timer watch loop is gone from the tree"
+grep -q 'bro-watch-loop' "$ROOT/bin/bro" && fail "bro still references a watch loop"
+[[ ! -e "$SUP_HOME/watch/watch.pid" ]] || fail "attach writes no watch-loop pidfile"
+# Nothing bro leaves running may capture the pane on its own. Give the started
+# backend a generous window with a fast fake clock and prove the log stays shut.
+: >"$TMP/sup-snap.log"
+PATH="$TMP/bin:$PATH" FAKE_SNAP_LOG="$TMP/sup-snap.log" BRO_HOME="$SUP_HOME" \
+  "$SUP_HOME/bin/bro" attach
+sleep 1
+[[ ! -s "$TMP/sup-snap.log" ]] || fail "a bro process captured the pane on a timer"
+# ...but asking still looks, immediately.
+PATH="$TMP/bin:$PATH" FAKE_SNAP_LOG="$TMP/sup-snap.log" BRO_HOME="$SUP_HOME" \
+  "$SUP_HOME/bin/bro" snapshot >/dev/null
+[[ -s "$TMP/sup-snap.log" ]] || fail "bro snapshot does not look when asked"
+: >"$TMP/sup-snap.log"
+PATH="$TMP/bin:$PATH" FAKE_SNAP_LOG="$TMP/sup-snap.log" BRO_HOME="$SUP_HOME" \
+  "$SUP_HOME/bin/bro" read >/dev/null 2>&1 || true
+[[ -s "$TMP/sup-snap.log" ]] || fail "bro read looks now instead of printing a stale file"
+kill "$(cat "$SUP_HOME/status-loop.pid")" 2>/dev/null || true
+rm -f "$SUP_HOME/status-loop.pid"
+pass "no bro process captures anything on a timer, and asking looks immediately"
 
 BAR_HOME="$TMP/bar-home"
 mkdir -p "$BAR_HOME/bin" "$BAR_HOME/logs" "$BAR_HOME/watch"
 cp "$ROOT/bin/bro" "$BAR_HOME/bin/"
-cat >"$BAR_HOME/bin/bro-watch-loop" <<'EOF'
+cat >"$BAR_HOME/bin/bro-status-loop" <<'EOF'
 #!/usr/bin/env bash
 while true; do sleep 10; done
 EOF
-cp "$BAR_HOME/bin/bro-watch-loop" "$BAR_HOME/bin/bro-status-loop"
 cat >"$BAR_HOME/bin/bro-snapshot" <<'EOF'
 #!/usr/bin/env bash
 exit 0
@@ -146,17 +166,17 @@ DAEMON_HOME="$TMP/daemon-home"
 AGENTS="$TMP/LaunchAgents"
 mkdir -p "$DAEMON_HOME/bin" "$DAEMON_HOME/logs" "$DAEMON_HOME/watch" "$AGENTS"
 cp "$ROOT/bin/bro" "$ROOT/bin/bro-daemon" "$DAEMON_HOME/bin/"
-cat >"$DAEMON_HOME/bin/bro-watch-loop" <<'EOF'
+cat >"$DAEMON_HOME/bin/bro-status-loop" <<'EOF'
 #!/usr/bin/env bash
 while true; do sleep 10; done
 EOF
-cp "$DAEMON_HOME/bin/bro-watch-loop" "$DAEMON_HOME/bin/bro-status-loop"
 cat >"$DAEMON_HOME/bin/bro-snapshot" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$(date +%s) $*" >>"${FAKE_SNAP_LOG:-/dev/null}"
 exit 0
 EOF
 mkdir -p "$DAEMON_HOME/dist/BroBar.app/Contents/MacOS"
-cp "$DAEMON_HOME/bin/bro-watch-loop" "$DAEMON_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
+cp "$DAEMON_HOME/bin/bro-status-loop" "$DAEMON_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
 chmod +x "$DAEMON_HOME/bin/"* "$DAEMON_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
 
 # The plist we ship must be exactly what the installer writes, and valid.
@@ -183,8 +203,10 @@ EOF
 chmod +x "$TMP/bin/launchctl"
 : >"$TMP/launchctl.log"
 rm -f "$TMP/loaded"
+: >"$TMP/daemon-snap.log"
 daemon_env=(PATH="$TMP/bin:$PATH" BRO_HOME="$DAEMON_HOME" BRO_LAUNCH_AGENTS="$AGENTS"
-  FAKE_LAUNCHCTL_LOG="$TMP/launchctl.log" FAKE_LOADED="$TMP/loaded")
+  FAKE_LAUNCHCTL_LOG="$TMP/launchctl.log" FAKE_LOADED="$TMP/loaded"
+  FAKE_SNAP_LOG="$TMP/daemon-snap.log")
 # Nothing is installed until asked: running bro must never write a login item.
 env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" backend-up
 [[ ! -e "$AGENTS/com.bro.backend.plist" ]] || fail "running bro installs no LaunchAgent by itself"
@@ -220,7 +242,8 @@ EOF
 chmod +x "$TMP/bin/tmux"
 env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" stop >/dev/null
 : >"$TMP/launchctl.log"
-rm -f "$DAEMON_HOME/watch/watch.pid" "$DAEMON_HOME/status-loop.pid" "$DAEMON_HOME/bro-bar.pid"
+rm -f "$DAEMON_HOME/status-loop.pid" "$DAEMON_HOME/bro-bar.pid"
+: >"$TMP/daemon-snap.log"
 env "${daemon_env[@]}" BRO_DAEMON_INTERVAL=0.2 "$DAEMON_HOME/bin/bro-daemon" run &
 daemon_pid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -251,13 +274,17 @@ done
 new_status_pid="$(cat "$DAEMON_HOME/status-loop.pid")"
 [[ "$new_status_pid" != "$d_status_pid" ]] || fail "daemon replaces a dead status loop"
 kill -0 "$new_status_pid" 2>/dev/null || fail "daemon's replacement status loop is alive"
+# Phase 5: the supervisor keeps the backend alive without ever making it look.
+# By now it has ticked many times at 0.2s; not one tick may have captured.
+[[ ! -s "$TMP/daemon-snap.log" ]] || fail "the daemon captured the pane on its supervision tick"
+[[ ! -e "$DAEMON_HOME/watch/watch.pid" ]] || fail "the daemon started a watch loop"
 # bro stop is the deliberate kill: daemon, loops, bar, and launchd's grip.
 env "${daemon_env[@]}" "$DAEMON_HOME/bin/bro" stop >/dev/null
 wait "$daemon_pid" 2>/dev/null || true
 kill -0 "$daemon_pid" 2>/dev/null && fail "bro stop stops the daemon"
 [[ ! -e "$DAEMON_HOME/daemon.pid" ]] || fail "bro stop clears the daemon pidfile"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  kill -0 "$(cat "$DAEMON_HOME/watch/watch.pid" 2>/dev/null || echo 1)" 2>/dev/null || break
+  kill -0 "$new_status_pid" 2>/dev/null || break
   sleep 0.1
 done
 kill -0 "$new_status_pid" 2>/dev/null && fail "bro stop stops the status loop"
@@ -388,7 +415,7 @@ pass "bro-show drives the floating panel by file and bro board keeps the nvim ov
 SNAP_HOME="$TMP/snap-home"
 SNAP_BIN="$TMP/snap-bin"
 mkdir -p "$SNAP_HOME/bin" "$SNAP_HOME/watch" "$SNAP_BIN"
-cp "$ROOT/bin/bro-snapshot" "$ROOT/bin/bro-watch-loop" "$SNAP_HOME/bin/"
+cp "$ROOT/bin/bro-snapshot" "$SNAP_HOME/bin/"
 cat >"$SNAP_BIN/screencapture" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_CAPTURE_LOG"
@@ -414,7 +441,7 @@ cat >"$SNAP_BIN/tmux" <<'EOF'
 case "$*" in
   *"has-session"*) exit 0 ;;
   *"list-windows"*) printf 'you\n' ;;
-  *"capture-pane"*) printf '%s\n' "pane-line-from-terminal" ;;
+  *"capture-pane"*) printf '%s\n' "${FAKE_PANE_LINE:-pane-line-from-terminal}" ;;
 esac
 exit 0
 EOF
@@ -444,34 +471,30 @@ PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/s
 rm -f "$SNAP_HOME/show-policy"
 pass "bro-snapshot --screen shoots and downscales the display while the pane path is unchanged"
 
-# The timer loop must never be able to photograph the screen.
-LOOP_HOME="$TMP/loop-home"
-mkdir -p "$LOOP_HOME/bin" "$LOOP_HOME/watch"
-cp "$ROOT/bin/bro-watch-loop" "$LOOP_HOME/bin/"
-cat >"$LOOP_HOME/bin/bro-snapshot" <<'EOF'
-#!/usr/bin/env bash
-printf 'args=%s no_screen=%s\n' "$*" "${BRO_NO_SCREEN:-}" >>"$FAKE_SNAP_LOG"
-EOF
-chmod +x "$LOOP_HOME/bin/"*
-: >"$TMP/loop-snap.log"
-FAKE_SNAP_LOG="$TMP/loop-snap.log" BRO_HOME="$LOOP_HOME" BRO_WATCH_INTERVAL=0.05 \
-  "$LOOP_HOME/bin/bro-watch-loop" &
-loop_pid=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [[ -s "$TMP/loop-snap.log" ]] && break
-  sleep 0.1
-done
-kill "$loop_pid" 2>/dev/null || true
-wait "$loop_pid" 2>/dev/null || true
-[[ -s "$TMP/loop-snap.log" ]] || fail "watch loop takes snapshots at all"
-grep -q -- '--screen' "$TMP/loop-snap.log" && fail "watch loop asked for a screen capture"
-grep -q 'no_screen=1' "$TMP/loop-snap.log" || fail "watch loop exports the BRO_NO_SCREEN guard"
+# Phase 5 replaced the timer with an ask. The guarantee to prove is no longer
+# "the loop cannot photograph the screen" but "every look is a fresh look, and
+# a non-ask context still cannot photograph the screen".
+#
+# Each ask re-reads the pane: the second capture must show what the pane says
+# now, not what the first capture left behind.
+PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/sips.log" \
+  FAKE_PANE_LINE='first-look' BRO_HOME="$SNAP_HOME" "$SNAP_HOME/bin/bro-snapshot"
+grep -q 'first-look' "$SNAP_HOME/watch/latest.md" || fail "an ask captures the pane as it is now"
+PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/sips.log" \
+  FAKE_PANE_LINE='error: build failed' BRO_HOME="$SNAP_HOME" "$SNAP_HOME/bin/bro-snapshot"
+grep -q 'error: build failed' "$SNAP_HOME/watch/latest.md" \
+  || fail "asking again looks again instead of serving the previous capture"
+grep -q 'first-look' "$SNAP_HOME/watch/latest.md" && fail "a fresh look still carried stale pane text"
+grep -q 'error: build failed' "$SNAP_HOME/watch/scrollback.txt" \
+  || fail "scrollback.txt follows the fresh capture"
+# BRO_NO_SCREEN outlives the loop that used to set it: it is the standing gate
+# for any context that is not a direct ask, and it costs nothing to keep.
 : >"$TMP/capture.log"
 PATH="$SNAP_BIN:$PATH" FAKE_CAPTURE_LOG="$TMP/capture.log" FAKE_SIPS_LOG="$TMP/sips.log" \
   BRO_NO_SCREEN=1 BRO_HOME="$SNAP_HOME" "$SNAP_HOME/bin/bro-snapshot" --screen 2>/dev/null \
   && fail "BRO_NO_SCREEN refuses a screen capture"
 [[ ! -s "$TMP/capture.log" ]] || fail "guarded context still ran screencapture"
-pass "the timer loop can never trigger a screen capture"
+pass "every look is a fresh look, and no non-ask context can photograph the screen"
 
 SPEAK="$ROOT/bin/bro-speakers"
 PY=""

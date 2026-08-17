@@ -32,6 +32,14 @@ Once installed, a terminal is just a client: `bro` attaches, and detaching
 (Ctrl-a d, or closing the window) leaves bro running. Only `bro stop` takes the
 whole thing down.
 
+## Looking
+
+Nothing watches you. There is no timer. Bro reads your pane at the moment it
+acts on something — when you ask it a question, when you run `bro read` or
+`bro snapshot`, or when you press Ctrl-a r. The screen (the whole display, not
+the terminal) is only ever captured on F3 or an explicit ask, and
+`~/.bro/show-policy` set to `no-screen` turns even that off.
+
 ## Keys
 
 | Key | What |
@@ -84,7 +92,7 @@ bro ping
 
 | Path | Role |
 |---|---|
-| `~/.bro/watch/latest.md` | What bro sees of your terminal |
+| `~/.bro/watch/latest.md` | What bro saw the last time it looked (written on demand, never on a timer) |
 | `~/.bro/show/current.md` | What the panel shows you |
 | `~/.bro/bin/bro-show` | How bro updates/opens the panel (and `--board` for nvim) |
 
