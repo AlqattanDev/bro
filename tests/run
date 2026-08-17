@@ -1023,3 +1023,43 @@ grep -q '#d19a66' "$TMP/home/state/status-line" || fail "the tmux paint has no n
 grep -q 'nudge' "$TMP/home/state/status-line" || fail "the tmux paint drops the nudge word"
 printf 'ready\n' >"$TMP/home/state/status-word"
 pass "the bar shows queue depth, down causes, nudges, and what is next"
+
+# Memory and goals: capture lands in the durable queue with the right kind,
+# and the boot prompt carries the filing rules so the backend — the one brain —
+# does the writing.
+MEM_HOME="$TMP/mem-home"
+mkdir -p "$MEM_HOME/bin"
+cp "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-wake" "$ROOT/bin/bro-remember" "$ROOT/bin/bro-goals" "$MEM_HOME/bin/"
+BRO_HOME="$MEM_HOME" "$MEM_HOME/bin/bro-remember" 'takes coffee black' >/dev/null
+remember_note="$(find "$MEM_HOME/inbox/pending" -type f -name '*.md' | head -1)"
+[[ -n "$remember_note" ]] || fail "bro-remember queued nothing"
+grep -qx 'kind=remember' "$remember_note" || fail "a remembered fact was not queued as kind=remember"
+grep -q 'takes coffee black' "$remember_note" || fail "the fact did not survive into the note"
+BRO_HOME="$MEM_HOME" "$MEM_HOME/bin/bro-remember" '   ' >/dev/null 2>&1 \
+  && fail "a blank fact was accepted"
+[[ "$(BRO_HOME="$MEM_HOME" "$MEM_HOME/bin/bro-goals")" == "no goals yet"* ]] \
+  || fail "bro-goals with no file should say how to add one"
+BRO_HOME="$MEM_HOME" "$MEM_HOME/bin/bro-goals" add 'ship the vox release by Friday' >/dev/null
+goal_note="$(find "$MEM_HOME/inbox/pending" -type f -name '*.md' | sort | tail -1)"
+grep -qx 'kind=goal' "$goal_note" || fail "a goal was not queued as kind=goal"
+grep -q 'ship the vox release' "$goal_note" || fail "the goal text did not survive"
+# The backend's filing rules ride in the boot prompt, like every other behavior.
+MEM_PROMPT_HOME="$TMP/mem-prompt-home"
+mkdir -p "$MEM_PROMPT_HOME/bin"
+cp "$ROOT/bin/bro-status" "$ROOT/bin/bro-status-paint" "$MEM_PROMPT_HOME/bin/"
+BRO_HOME="$MEM_PROMPT_HOME" BRO_BACKEND=none "$ROOT/bin/bro-shell" >/dev/null 2>&1 &
+mem_prompt_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ -s "$MEM_PROMPT_HOME/bro-boot-prompt.txt" ]] && break
+  sleep 0.1
+done
+kill "$mem_prompt_pid" 2>/dev/null || true
+wait "$mem_prompt_pid" 2>/dev/null || true
+mprompt="$MEM_PROMPT_HOME/bro-boot-prompt.txt"
+grep -q 'MEMORY (permanent)' "$mprompt" || fail "the boot prompt has no memory rules"
+grep -q 'kind=remember' "$mprompt" || fail "the boot prompt does not explain kind=remember"
+grep -q 'NEVER store secrets' "$mprompt" || fail "the boot prompt does not forbid secrets in memory"
+grep -q 'goals.md' "$mprompt" || fail "the boot prompt does not know goals.md"
+grep -q 'kind=goal' "$mprompt" || fail "the boot prompt does not explain kind=goal"
+grep -q 'Never invent goals' "$mprompt" || fail "the boot prompt does not forbid inventing goals"
+pass "memory and goals queue as their own kinds and the boot prompt owns the filing rules"

@@ -23,3 +23,7 @@ daemon.pid
 /speakers/
 __pycache__/
 show/panel
+/memory/
+/goals.md
+/reminders/
+/quiet-hours

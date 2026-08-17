@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Goals: the list bro steers by.
+#
+#   bro-goals              print ~/.bro/goals.md
+#   bro-goals add TEXT     queue a new goal (kind=goal) for the backend to file
+#
+# The file is plain markdown, one ## section per goal with a next: line.
+# Ali can edit it directly at any time — it is the source of truth, and the
+# backend reads it fresh whenever it matters.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+GOALS="$BRO_HOME/goals.md"
+INBOX_TOOL="$BRO_HOME/bin/bro-inbox"
+
+case "${1:-show}" in
+  show|list)
+    if [[ -f "$GOALS" ]]; then
+      cat "$GOALS"
+    else
+      echo "no goals yet — add one: bro goal ship the vox release by Friday"
+    fi
+    ;;
+  add)
+    shift
+    text="$*"
+    if [[ -z "${text//[[:space:]]/}" ]]; then
+      echo "usage: bro-goals add TEXT" >&2
+      exit 2
+    fi
+    printf '%s\n' "$text" | "$INBOX_TOOL" enqueue goal "$(pwd 2>/dev/null || echo unknown)" >/dev/null
+    echo "goal queued"
+    ;;
+  path)
+    printf '%s\n' "$GOALS"
+    ;;
+  *)
+    echo "usage: bro-goals [show|add TEXT|path]" >&2
+    exit 2
+    ;;
+esac

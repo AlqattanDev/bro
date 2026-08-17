@@ -46,6 +46,9 @@ bro — full-screen work + hidden agent + clean board
   bro show [--open|--close]        Toggle the floating answer panel (F1)
   bro summon <message>             Same as the ⌃§ hotkey: ask from anywhere, async
   bro summon voice                 Same as the ⌥§ hotkey: open the mic now
+  bro remember <fact>              File a fact into long-term memory
+  bro goal <text>                  Add a goal; bro steers briefs and nudges by it
+  bro goals                        Show the goal list
   bro hotkeys                      Show the global summon keys in force
   bro speakers on|off|status       Cheap two-voice ID (off by default)
   bro status                       Show current talk mode
@@ -231,6 +234,17 @@ case "$cmd" in
     ;;
   doctor)
     exec "$BRO_HOME/bin/bro-doctor"
+    ;;
+  remember)
+    shift
+    exec "$BRO_HOME/bin/bro-remember" "$@"
+    ;;
+  goal)
+    shift
+    exec "$BRO_HOME/bin/bro-goals" add "$@"
+    ;;
+  goals)
+    exec "$BRO_HOME/bin/bro-goals" show
     ;;
   -h|--help|help)
     usage

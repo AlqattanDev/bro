@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Remember a fact: "bro remember I take my coffee black".
+#
+# The fact lands in the durable inbox as kind=remember; the backend appends it
+# to the right file in ~/.bro/memory/ (the boot prompt owns the filing rules).
+# Nothing is written directly from here — one brain files everything, so the
+# rules live in exactly one place.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+INBOX_TOOL="$BRO_HOME/bin/bro-inbox"
+
+fact="$*"
+if [[ -z "${fact//[[:space:]]/}" ]]; then
+  echo "usage: bro-remember FACT" >&2
+  exit 2
+fi
+
+printf '%s\n' "$fact" | "$INBOX_TOOL" enqueue remember "$(pwd 2>/dev/null || echo unknown)" >/dev/null
+echo "remembered (queued)"
