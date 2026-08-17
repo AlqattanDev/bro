@@ -18,3 +18,5 @@ daemon.pid
 /show-policy
 /speakers/
 __pycache__/
+
+/verify.md

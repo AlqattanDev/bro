@@ -57,6 +57,7 @@ bro — full-screen work + hidden agent + clean board
   bro stop                         End everything (daemon, loops, bar, session)
   bro daemon install|uninstall     Run the backend at login under launchd
   bro daemon status|restart        (install is explicit — never automatic)
+  bro verify                       Keyboard checklist for what no test can reach
   bro help
 
 Global keys (any app, no terminal needed — BroBar registers them):
@@ -202,6 +203,10 @@ case "$cmd" in
   daemon)
     shift
     exec "$BRO_HOME/bin/bro-daemon" "${@:-status}"
+    ;;
+  verify)
+    shift
+    exec "$BRO_HOME/bin/bro-verify" "${@:-run}"
     ;;
   -h|--help|help)
     usage

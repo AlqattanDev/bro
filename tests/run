@@ -348,6 +348,19 @@ PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" BRO_HOME="$QUEUE_HOME" \
 grep -q ':me' "$TMP/tmux.log" || fail "backend wakeup targets the me pane"
 pass "queue updates visibly wake the backend"
 
+cat >"$TMP/bin/open" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_OPEN_LOG:-/dev/null}"
+EOF
+chmod +x "$TMP/bin/open"
+: >"$TMP/tmux.log"
+: >"$TMP/open.log"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" FAKE_OPEN_LOG="$TMP/open.log" \
+  BRO_HOME="$QUEUE_HOME" "$ROOT/bin/bro-wake" menubar
+grep -q ':me' "$TMP/tmux.log" || fail "a menu-bar click still wakes the backend"
+[[ ! -s "$TMP/open.log" ]] || fail "a menu-bar click raised a terminal while bro was already up"
+pass "a menu-bar click wakes bro without stealing the front app"
+
 cat >"$TMP/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${FAKE_TMUX_LOG:-/dev/null}"
@@ -760,6 +773,11 @@ grep -q 'waveform.badge.mic' "$BAR" || fail "the speak-and-listen (barge-in) gly
 grep -q 'showVoiceMenu' "$BAR" || fail "the voice controls have no way to be opened"
 grep -q "Show Vox's own menu bar icon" "$BAR" \
   || fail "hiding Vox's icon must be reversible from bro's menu"
+grep -q 'panel.toggle()' "$BAR" || fail "a menu-bar click no longer opens the panel"
+grep -q 'bundleIdentifier == "com.bro.brobar"' "$ROOT/macos/main.swift" \
+  || fail "BroBar does not refuse to launch a second copy"
+grep -q 'BroSummon.run(\["voice"\])' "$ROOT/macos/BroPanel.swift" \
+  || fail "the panel has no Talk action"
 
 # Vox's half of the handoff, when this machine has the vox-mcp checkout.
 VOXSRC="${VOX_SRC:-$HOME/vox-mcp/macos/VoxStatus.swift}"
@@ -774,3 +792,45 @@ else
   echo "# note: vox-mcp checkout absent, skipped Vox's half of the handoff" >&2
 fi
 pass "one menu bar item: bro claims it by live pid, Vox hides its own, and bro shows everything Vox did"
+
+# bro-verify: the keyboard checklist records pass/fail/skip honestly, latest
+# answer wins, a fail exits non-zero, and a passed item is never re-asked.
+VF_HOME="$TMP/verify-home"
+mkdir -p "$VF_HOME/bin" "$VF_HOME/watch"
+cat >"$VF_HOME/bin/bro-daemon" <<'EOF'
+#!/usr/bin/env bash
+cat <<'STATUS'
+plist: installed (/tmp/x)
+launchd: loaded (gui/501/com.bro.backend)
+supervisor: running (pid 42)
+STATUS
+EOF
+cat >"$VF_HOME/bin/bro" <<'EOF'
+#!/usr/bin/env bash
+# The summon the checklist fires: pretend the backend photographed the screen.
+mkdir -p "$BRO_HOME/watch"
+printf 'fake-png\n' >"$BRO_HOME/watch/screen.png"
+EOF
+chmod +x "$VF_HOME/bin/"*
+# Six yeses: daemon ok, bar restarted, hotkeys fired, field behaved, webpage up,
+# panel described the page, esc dismissed. (The summon step touches screen.png.)
+printf 'y\ny\ny\ny\ny\ny\ny\n' | BRO_HOME="$VF_HOME" "$ROOT/bin/bro-verify" >/dev/null \
+  || fail "an all-yes checklist run should succeed"
+for item in daemon hotkeys summon-field summon-screen esc-dismiss; do
+  grep -q "^- $item: pass" "$VF_HOME/verify.md" || fail "checklist item '$item' was not recorded pass"
+done
+# A second run skips passed items — no input needed at all.
+BRO_HOME="$VF_HOME" "$ROOT/bin/bro-verify" </dev/null >/dev/null \
+  || fail "a fully-passed checklist re-run should need no input and succeed"
+# A 'no' answer is recorded as fail and the run reports failure overall.
+BRO_HOME="$VF_HOME" "$ROOT/bin/bro-verify" reset >/dev/null
+printf 'n\ny\ny\ny\ny\ny\ny\n' | BRO_HOME="$VF_HOME" "$ROOT/bin/bro-verify" >/dev/null 2>&1 \
+  && fail "a checklist with a failed item must exit non-zero"
+grep -q '^- daemon: fail' "$VF_HOME/verify.md" || fail "a 'no' answer was not recorded as fail"
+grep -q '^- hotkeys: pass' "$VF_HOME/verify.md" || fail "items after a failure still ran and recorded"
+# Latest answer wins: re-answer the same item and only one line survives.
+printf 'y\ny\ny\ny\ny\ny\ny\n' | BRO_HOME="$VF_HOME" "$ROOT/bin/bro-verify" >/dev/null
+[[ "$(grep -c '^- daemon: ' "$VF_HOME/verify.md")" -eq 1 ]] \
+  || fail "re-answering an item left duplicate lines in verify.md"
+grep -q '^- daemon: pass' "$VF_HOME/verify.md" || fail "the newer answer did not replace the older one"
+pass "bro-verify records the keyboard checklist, latest answer wins, failures exit non-zero"

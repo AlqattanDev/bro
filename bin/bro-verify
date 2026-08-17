@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# bro-verify — the keyboard checklist no test can reach.
+#
+# Every other guarantee in bro is proven by tests/run with fakes. These five
+# are not: they need Ali's hands, a real menu bar, and a real keyboard. This
+# script walks each one, automates what can be automated (daemon state, hotkey
+# registration lines, screenshot freshness), asks about the rest, and records
+# the outcome in ~/.bro/verify.md so a later session can see what is proven.
+#
+# Usage:
+#   bro-verify          run the whole checklist (skips items already passed)
+#   bro-verify reset    clear verify.md and start over
+#   bro-verify show     print verify.md
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+VERIFY="$BRO_HOME/verify.md"
+BAR_LOG="$BRO_HOME/logs/bro-bar.log"
+
+cmd="${1:-run}"
+case "$cmd" in
+  show) exec cat "$VERIFY" 2>/dev/null || echo "no verify.md yet — run: bro verify" ;;
+  reset) rm -f "$VERIFY"; echo "cleared $VERIFY"; exit 0 ;;
+  run) ;;
+  *) echo "usage: bro-verify [run|show|reset]" >&2; exit 2 ;;
+esac
+
+mkdir -p "$BRO_HOME"
+[[ -f "$VERIFY" ]] || cat >"$VERIFY" <<EOF
+# bro verify — human checklist
+# pass/fail/skip recorded by bin/bro-verify. Re-run any time: bro verify
+EOF
+
+record() {
+  # record ITEM RESULT — one line per item, latest wins.
+  local item="$1" result="$2" tmp
+  tmp="$VERIFY.tmp.$$"
+  grep -v "^- $item: " "$VERIFY" >"$tmp" 2>/dev/null || true
+  printf -- '- %s: %s (%s)\n' "$item" "$result" "$(date '+%Y-%m-%d %H:%M')" >>"$tmp"
+  mv "$tmp" "$VERIFY"
+}
+
+already_passed() {
+  grep -q "^- $1: pass" "$VERIFY" 2>/dev/null
+}
+
+ask() {
+  # ask ITEM "question" — y records pass, n records fail, s skips.
+  local item="$1" question="$2" reply
+  while true; do
+    printf '\n%s [y/n/s(kip)] ' "$question"
+    read -r reply
+    case "$reply" in
+      y|Y) record "$item" pass; return 0 ;;
+      n|N) record "$item" fail; return 1 ;;
+      s|S) record "$item" skip; return 0 ;;
+      *) echo "y = works, n = broken, s = not now" ;;
+    esac
+  done
+}
+
+echo "bro verify — five things no headless test can prove."
+echo "Answers land in $VERIFY. Run from a real terminal, not over SSH."
+echo
+
+# --- 1. the daemon owns the backend -----------------------------------------
+if already_passed daemon; then
+  echo "1/5 daemon: already passed — skipping"
+else
+  echo "1/5 The daemon owns the backend"
+  if "$BRO_HOME/bin/bro-daemon" status 2>/dev/null | grep -q 'plist: installed'; then
+    echo "    LaunchAgent already installed."
+  else
+    echo "    This writes ONE login item: ~/Library/LaunchAgents/com.bro.backend.plist"
+    echo "    Nothing else touches your startup. It is reversible: bro daemon uninstall"
+    printf '    Install it now? [y/n] '
+    read -r reply
+    if [[ "$reply" == y || "$reply" == Y ]]; then
+      "$BRO_HOME/bin/bro-daemon" install
+    fi
+  fi
+  echo "    Current state:"
+  "$BRO_HOME/bin/bro-daemon" status 2>/dev/null | sed 's/^/      /' || true
+  ask daemon "Is the agent installed, loaded, and the supervisor running (all three lines above say so)?" || \
+    echo "    → check logs/daemon.err.log, then: bro daemon restart"
+fi
+
+# --- 2. the hotkeys are live everywhere -------------------------------------
+if already_passed hotkeys; then
+  echo "2/5 hotkeys: already passed — skipping"
+else
+  echo
+  echo "2/5 The summon keys work from any app"
+  echo "    BroBar must be freshly restarted for this to mean anything."
+  printf '    Run: bro stop && bro   — done? [y/n] '
+  read -r reply
+  [[ "$reply" == y || "$reply" == Y ]] || echo "    (continuing anyway — results may be stale)"
+  echo
+  echo "    Now switch to a browser or IDE and press ⌥§ then ⌃§ (§ is left of 1)."
+  echo "    Expect: NO permission prompt; ⌥§ opens the mic; ⌃§ opens a one-line field."
+  if [[ -f "$BAR_LOG" ]]; then
+    echo "    Registration lines from the log:"
+    grep 'hotkey' "$BAR_LOG" | tail -4 | sed 's/^/      /' || true
+    if grep -q 'NOT registered' "$BAR_LOG"; then
+      echo "    ⚠ a hotkey failed to register — another app owns it. Rebind in ~/.bro/hotkeys"
+    fi
+  else
+    echo "    (no $BAR_LOG — is BroBar running?)"
+  fi
+  ask hotkeys "Did both keys fire from the other app, with no permission prompt?" || true
+fi
+
+# --- 3. the typed field takes keys and gives focus back ----------------------
+if already_passed summon-field; then
+  echo "3/5 summon field: already passed — skipping"
+else
+  echo
+  echo "3/5 The ⌃§ field: keys arrive, Enter sends, Esc cancels, focus returns"
+  echo "    From another app: press ⌃§, type a short question, Enter."
+  echo "    Then again, and this time press Esc instead."
+  ask summon-field "Did typing work, Enter send, Esc cancel, and focus return to your app both times?" || {
+    echo "    → The fix, and only this fix: in macos/BroSummon.swift drop"
+    echo "      .nonactivatingPanel from SummonPanel's styleMask. NEVER touch"
+    echo "      AnswerPanel — its never-takes-focus guarantee is sacred."
+    echo "      Then: bro-update (or bin/build-bro-bar && bro stop && bro)."
+  }
+fi
+
+# --- 4. a summon photographs the screen, not the pane ------------------------
+if already_passed summon-screen; then
+  echo "4/5 summon screen: already passed — skipping"
+else
+  echo
+  echo "4/5 A summon about what you're looking at uses the SCREEN"
+  echo "    Open a webpage (anything readable), then come back here."
+  printf '    Ready, webpage up? [y/n] '
+  read -r reply
+  if [[ "$reply" == y || "$reply" == Y ]]; then
+    before="$(stat -f %m "$BRO_HOME/watch/screen.png" 2>/dev/null || echo 0)"
+    "$BRO_HOME/bin/bro" summon "read this page for me — one sentence" >/dev/null
+    echo "    Summon fired. Waiting for bro to answer (up to 90s)…"
+    ok=0
+    for _ in $(seq 1 45); do
+      now="$(stat -f %m "$BRO_HOME/watch/screen.png" 2>/dev/null || echo 0)"
+      if [[ "$now" -gt "$before" ]]; then ok=1; break; fi
+      sleep 2
+    done
+    if [[ "$ok" -eq 1 ]]; then
+      echo "    ✓ watch/screen.png was refreshed — bro photographed the screen."
+      ask summon-screen "And did the panel's answer describe the page, not a terminal?" || true
+    else
+      record summon-screen fail
+      echo "    ✗ screen.png was NOT refreshed. If show-policy says no-screen this is"
+      echo "      correct behavior — check: cat ~/.bro/show-policy"
+      echo "      Otherwise check logs/backend.log for what the backend did instead."
+    fi
+  else
+    record summon-screen skip
+  fi
+fi
+
+# --- 5. Esc dismisses the answer panel (optional Accessibility grant) --------
+if already_passed esc-dismiss; then
+  echo "5/5 esc-dismiss: already passed — skipping"
+else
+  echo
+  echo "5/5 Esc dismisses the answer panel (optional — clicking it also works)"
+  echo "    Signing is stable now, so one Accessibility grant survives rebuilds:"
+  echo "    System Settings → Privacy & Security → Accessibility → enable BroBar."
+  ask esc-dismiss "Open the panel (F1 or click the menu bar word) — does Esc dismiss it?" || \
+    echo "    → grant Accessibility as above, then: bro stop && bro"
+fi
+
+echo
+echo "— summary —"
+cat "$VERIFY"
+if grep -q ': fail' "$VERIFY"; then
+  echo
+  echo "Something failed. verify.md says what; each failure printed its fix above."
+  exit 1
+fi
