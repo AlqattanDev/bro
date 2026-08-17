@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# bro-nudge-loop — the only timer bro has, and it only ever looks at the clock.
+#
+# Every 30s: which armed reminders are due? Fire each one into the inbox as
+# kind=nudge and mark it fired. That is the whole job. This loop NEVER reads
+# the pane, NEVER photographs the screen, never even stats them — "nothing
+# watches you" means bro's timers may look at bro's own files and the time of
+# day, nothing else. tests/run proves it the same way the old watch loop's
+# removal was proven: a fake snapshot log that must stay empty across ticks.
+#
+# Supervised exactly like bro-status-loop: pidfile in state/, started by
+# backend_up, restarted by the daemon, killed by bro stop.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+STATE="${BRO_STATE_DIR:-$BRO_HOME/state}"
+REMIND="$BRO_HOME/bin/bro-remind"
+INBOX_TOOL="$BRO_HOME/bin/bro-inbox"
+QUIET_HOURS="$STATE/quiet-hours"
+INTERVAL="${BRO_NUDGE_INTERVAL:-30}"
+mkdir -p "$STATE"
+
+inside_quiet_hours() {
+  # quiet-hours holds "22:00-08:00". Inside the window a nudge still fires —
+  # it just arrives quiet=1, and the boot prompt makes that panel-only.
+  [[ -f "$QUIET_HOURS" ]] || return 1
+  local span start end now_min s_min e_min
+  span="$(tr -d '[:space:]' 2>/dev/null <"$QUIET_HOURS" || true)"
+  [[ "$span" =~ ^([0-9]{1,2}):([0-9]{2})-([0-9]{1,2}):([0-9]{2})$ ]] || return 1
+  s_min=$(( ${BASH_REMATCH[1]#0} * 60 + ${BASH_REMATCH[2]#0} ))
+  e_min=$(( ${BASH_REMATCH[3]#0} * 60 + ${BASH_REMATCH[4]#0} ))
+  now_min=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
+  if (( s_min <= e_min )); then
+    (( now_min >= s_min && now_min < e_min ))
+  else
+    # Overnight span: inside when after start OR before end.
+    (( now_min >= s_min || now_min < e_min ))
+  fi
+}
+
+fire() {
+  local id="$1" f="$BRO_HOME/reminders/$id.md"
+  [[ -f "$f" ]] || return 0
+  local text role quiet_flag
+  text="$(sed -n 's/^text=//p' "$f")"
+  role="$(sed -n 's/^role=//p' "$f")"
+  quiet_flag=0
+  inside_quiet_hours && quiet_flag=1
+  {
+    [[ -n "$role" ]] && echo "role=$role"
+    echo "quiet=$quiet_flag"
+    echo "reminder=$id"
+    echo ""
+    printf '%s\n' "$text"
+  } | "$INBOX_TOOL" enqueue nudge "$BRO_HOME" >/dev/null
+  "$REMIND" mark-fired "$id"
+}
+
+while true; do
+  fired_any=0
+  for id in $("$REMIND" due 2>/dev/null); do
+    fire "$id"
+    fired_any=1
+  done
+  # The bar says nudge until the backend claims the note and takes over with
+  # working. bro-status keeps backend-word in step, so a crash mid-nudge
+  # leaves the honest word instead of flapping back to ready.
+  if (( fired_any )); then
+    "$BRO_HOME/bin/bro-status" nudge 2>/dev/null || true
+  fi
+  sleep "$INTERVAL" &
+  wait $! || true
+done

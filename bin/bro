@@ -49,6 +49,11 @@ bro — full-screen work + hidden agent + clean board
   bro remember <fact>              File a fact into long-term memory
   bro goal <text>                  Add a goal; bro steers briefs and nudges by it
   bro goals                        Show the goal list
+  bro remind [list]                Show reminders
+  bro remind '+30m' stretch        Remind me (WHEN: +Nm +Nh HH:MM YYYY-MM-DDTHH:MM)
+  bro remind cancel <id>           Cancel one
+  bro brief [HH:MM|off]            Morning brief now, or scheduled daily
+  bro debrief [HH:MM|off]          Evening debrief now, or scheduled daily
   bro hotkeys                      Show the global summon keys in force
   bro speakers on|off|status       Cheap two-voice ID (off by default)
   bro status                       Show current talk mode
@@ -113,6 +118,17 @@ start_status_loop() {
   echo $! >"$pidfile"
 }
 
+start_nudge_loop() {
+  # The reminder timer. It only ever reads ~/.bro/reminders and the clock —
+  # supervision identical to the status loop, philosophy intact.
+  local pidfile="$STATE/nudge-loop.pid"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    return 0
+  fi
+  nohup "$BRO_HOME/bin/bro-nudge-loop" >>"$BRO_HOME/logs/nudge.log" 2>&1 &
+  echo $! >"$pidfile"
+}
+
 bro_bar_bin() {
   # Built by bin/build-bro-bar. Absent on a machine that never built it.
   printf '%s\n' "${BRO_BAR_BIN:-$BRO_HOME/dist/BroBar.app/Contents/MacOS/BroBar}"
@@ -168,6 +184,11 @@ stop_loops() {
     kill "$(cat "$spid")" 2>/dev/null || true
     rm -f "$spid"
   fi
+  local npid="$STATE/nudge-loop.pid"
+  if [[ -f "$npid" ]]; then
+    kill "$(cat "$npid")" 2>/dev/null || true
+    rm -f "$npid"
+  fi
 }
 
 backend_up() {
@@ -184,6 +205,7 @@ backend_up() {
   # No watch loop: nothing here captures the pane on a timer. Bro reads the
   # pane at the moment it acts (bro-snapshot / tmux capture-pane), on demand.
   start_status_loop
+  start_nudge_loop
   start_bro_bar
   if ! "${TMUXC[@]}" has-session -t "$SESSION" 2>/dev/null; then
     create_session
@@ -245,6 +267,38 @@ case "$cmd" in
     ;;
   goals)
     exec "$BRO_HOME/bin/bro-goals" show
+    ;;
+  remind)
+    shift
+    # A reminder with a WHEN is an add; no args is a listing.
+    if [[ $# -ge 2 ]]; then
+      exec "$BRO_HOME/bin/bro-remind" add "$@"
+    fi
+    exec "$BRO_HOME/bin/bro-remind" "${@:-list}"
+    ;;
+  brief|debrief)
+    role="$cmd"
+    shift
+    case "${1:-}" in
+      "")
+        { echo "role=$role"; echo ""; echo "Compose my $role now."; } \
+          | "$INBOX_TOOL" enqueue ask "$(pwd)" >/dev/null
+        echo "$role queued"
+        ;;
+      off)
+        for f in "$BRO_HOME"/reminders/*.md; do
+          [[ -e "$f" ]] || continue
+          if grep -qx "role=$role" "$f"; then
+            "$BRO_HOME/bin/bro-remind" cancel "$(sed -n 's/^id=//p' "$f")" >/dev/null
+          fi
+        done
+        echo "$role schedule off"
+        ;;
+      *)
+        id="$("$BRO_HOME/bin/bro-remind" add --daily --role "$role" "$1" "daily $role")"
+        echo "$role scheduled daily at $1 ($id)"
+        ;;
+    esac
     ;;
   -h|--help|help)
     usage

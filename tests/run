@@ -367,7 +367,7 @@ pass "bro-run refuses non-shell panes"
 
 : >"$TMP/tmux.log"
 PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" BRO_HOME="$QUEUE_HOME" \
-  "$ROOT/bin/bro-wake" queue
+  BRO_TMUX_SOCKET=bro-test "$ROOT/bin/bro-wake" queue
 grep -q ':me' "$TMP/tmux.log" || fail "backend wakeup targets the me pane"
 pass "queue updates visibly wake the backend"
 
@@ -379,10 +379,22 @@ chmod +x "$TMP/bin/open"
 : >"$TMP/tmux.log"
 : >"$TMP/open.log"
 PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" FAKE_OPEN_LOG="$TMP/open.log" \
-  BRO_HOME="$QUEUE_HOME" "$ROOT/bin/bro-wake" menubar
+  BRO_HOME="$QUEUE_HOME" BRO_TMUX_SOCKET=bro-test "$ROOT/bin/bro-wake" menubar
 grep -q ':me' "$TMP/tmux.log" || fail "a menu-bar click still wakes the backend"
 [[ ! -s "$TMP/open.log" ]] || fail "a menu-bar click raised a terminal while bro was already up"
 pass "a menu-bar click wakes bro without stealing the front app"
+
+# The flip side of the guard: a foreign BRO_HOME with no socket of its own
+# must never poke the live session — tests and scratch installs stay silent.
+: >"$TMP/tmux.log"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" BRO_HOME="$QUEUE_HOME" \
+  "$ROOT/bin/bro-wake" queue
+[[ ! -s "$TMP/tmux.log" ]] || fail "a foreign-home wake without a socket poked a session"
+: >"$TMP/tmux.log"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" BRO_HOME="$QUEUE_HOME" \
+  BRO_TMUX_SOCKET=bro "$ROOT/bin/bro-wake" ask
+[[ ! -s "$TMP/tmux.log" ]] || fail "a foreign home with the live socket name still poked the session"
+pass "a wake from a foreign home with no socket touches nothing"
 
 cat >"$TMP/bin/tmux" <<'EOF'
 #!/usr/bin/env bash
@@ -930,7 +942,10 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 [[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == down ]] || fail "a stale starting did not become down"
 printf 'starting\n' >"$ST_HOME/state/status-backend-word"
-sleep 0.3
+for _ in $(seq 1 20); do
+  [[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == starting ]] && break
+  sleep 0.1
+done
 [[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == starting ]] || fail "a fresh starting was demoted too early"
 kill "$stale_pid"
 wait "$stale_pid" 2>/dev/null || true
@@ -1030,16 +1045,19 @@ pass "the bar shows queue depth, down causes, nudges, and what is next"
 MEM_HOME="$TMP/mem-home"
 mkdir -p "$MEM_HOME/bin"
 cp "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-wake" "$ROOT/bin/bro-remember" "$ROOT/bin/bro-goals" "$MEM_HOME/bin/"
-BRO_HOME="$MEM_HOME" "$MEM_HOME/bin/bro-remember" 'takes coffee black' >/dev/null
+BRO_HOME="$MEM_HOME" BRO_TMUX_SOCKET=bro-mem-test \
+  "$MEM_HOME/bin/bro-remember" 'takes coffee black' >/dev/null
 remember_note="$(find "$MEM_HOME/inbox/pending" -type f -name '*.md' | head -1)"
 [[ -n "$remember_note" ]] || fail "bro-remember queued nothing"
 grep -qx 'kind=remember' "$remember_note" || fail "a remembered fact was not queued as kind=remember"
 grep -q 'takes coffee black' "$remember_note" || fail "the fact did not survive into the note"
-BRO_HOME="$MEM_HOME" "$MEM_HOME/bin/bro-remember" '   ' >/dev/null 2>&1 \
+BRO_HOME="$MEM_HOME" BRO_TMUX_SOCKET=bro-mem-test \
+  "$MEM_HOME/bin/bro-remember" '   ' >/dev/null 2>&1 \
   && fail "a blank fact was accepted"
 [[ "$(BRO_HOME="$MEM_HOME" "$MEM_HOME/bin/bro-goals")" == "no goals yet"* ]] \
   || fail "bro-goals with no file should say how to add one"
-BRO_HOME="$MEM_HOME" "$MEM_HOME/bin/bro-goals" add 'ship the vox release by Friday' >/dev/null
+BRO_HOME="$MEM_HOME" BRO_TMUX_SOCKET=bro-mem-test \
+  "$MEM_HOME/bin/bro-goals" add 'ship the vox release by Friday' >/dev/null
 goal_note="$(find "$MEM_HOME/inbox/pending" -type f -name '*.md' | sort | tail -1)"
 grep -qx 'kind=goal' "$goal_note" || fail "a goal was not queued as kind=goal"
 grep -q 'ship the vox release' "$goal_note" || fail "the goal text did not survive"
@@ -1062,4 +1080,155 @@ grep -q 'NEVER store secrets' "$mprompt" || fail "the boot prompt does not forbi
 grep -q 'goals.md' "$mprompt" || fail "the boot prompt does not know goals.md"
 grep -q 'kind=goal' "$mprompt" || fail "the boot prompt does not explain kind=goal"
 grep -q 'Never invent goals' "$mprompt" || fail "the boot prompt does not forbid inventing goals"
+# A remembered fact from a scratch BRO_HOME must not wake the live session.
+: >"$TMP/tmux.log"
+cat >"$TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${FAKE_TMUX_LOG:-/dev/null}"
+exit 0
+EOF
+chmod +x "$TMP/bin/tmux"
+PATH="$TMP/bin:$PATH" FAKE_TMUX_LOG="$TMP/tmux.log" \
+  BRO_HOME="$MEM_HOME" "$MEM_HOME/bin/bro-wake" remember
+[[ ! -s "$TMP/tmux.log" ]] || fail "a test BRO_HOME woke the live tmux session"
 pass "memory and goals queue as their own kinds and the boot prompt owns the filing rules"
+
+# Reminders: the store arms, lists, fires, re-arms daily ones, and keeps
+# state/next-reminder honest for the menu bar.
+REM_HOME="$TMP/rem-home"
+mkdir -p "$REM_HOME/bin"
+cp "$ROOT/bin/bro-remind" "$REM_HOME/bin/"
+rid="$(BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" add '+30m' 'stretch')"
+[[ -f "$REM_HOME/reminders/$rid.md" ]] || fail "bro-remind add wrote no reminder file"
+grep -qx 'state=armed' "$REM_HOME/reminders/$rid.md" || fail "a new reminder is not armed"
+grep -qx 'repeat=none' "$REM_HOME/reminders/$rid.md" || fail "a plain reminder is marked daily"
+BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" list | grep -q 'stretch' \
+  || fail "bro-remind list does not show the armed reminder"
+grep -q 'stretch' "$REM_HOME/state/next-reminder" || fail "the menu bar's next-reminder file is stale"
+[[ -z "$(BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" due)" ]] \
+  || fail "a reminder 30 minutes out is already due"
+BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" add 'not-a-time' 'x' >/dev/null 2>&1 \
+  && fail "an unparseable WHEN was accepted"
+# A past ISO time is due immediately.
+past="$(date -v-1H '+%Y-%m-%dT%H:%M')"
+rid2="$(BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" add "$past" 'call mom')"
+[[ "$(BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" due)" == "$rid2" ]] \
+  || fail "a past reminder did not come due"
+BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" mark-fired "$rid2"
+grep -qx 'state=fired' "$REM_HOME/reminders/$rid2.md" || fail "mark-fired did not fire"
+[[ -z "$(BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" due)" ]] \
+  || fail "a fired reminder is still due"
+# Daily reminders re-arm for the future instead of firing once.
+rid3="$(BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" add --daily "$past" 'water')"
+BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" mark-fired "$rid3"
+grep -qx 'state=armed' "$REM_HOME/reminders/$rid3.md" || fail "a daily reminder did not re-arm"
+[[ "$(sed -n 's/^when=//p' "$REM_HOME/reminders/$rid3.md")" -gt "$(date +%s)" ]] \
+  || fail "a re-armed daily reminder is still in the past"
+# Cancel removes and the bar file follows.
+BRO_HOME="$REM_HOME" "$REM_HOME/bin/bro-remind" cancel "$rid" >/dev/null
+[[ ! -e "$REM_HOME/reminders/$rid.md" ]] || fail "cancel left the reminder behind"
+grep -q 'stretch' "$REM_HOME/state/next-reminder" 2>/dev/null \
+  && fail "next-reminder still names the cancelled reminder"
+pass "bro-remind arms, fires, re-arms daily reminders, and keeps the bar's next file honest"
+
+# The nudge loop fires due reminders into the inbox and ONLY looks at the
+# clock: no snapshot, no pane, no screen, ever.
+NUDGE_HOME="$TMP/nudge-home"
+mkdir -p "$NUDGE_HOME/bin" "$NUDGE_HOME/state"
+cp "$ROOT/bin/bro-remind" "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-nudge-loop" "$NUDGE_HOME/bin/"
+cat >"$NUDGE_HOME/bin/bro-wake" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$NUDGE_HOME/bin/bro-status" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >>"${FAKE_STATUS_LOG:-/dev/null}"
+EOF
+cat >"$NUDGE_HOME/bin/bro-snapshot" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$(date +%s) $*" >>"${FAKE_SNAP_LOG:-/dev/null}"
+EOF
+chmod +x "$NUDGE_HOME/bin/"*
+past="$(date -v-1H '+%Y-%m-%dT%H:%M')"
+BRO_HOME="$NUDGE_HOME" "$NUDGE_HOME/bin/bro-remind" add "$past" 'call mom' >/dev/null
+BRO_HOME="$NUDGE_HOME" "$NUDGE_HOME/bin/bro-remind" add --daily "$past" 'stand up' >/dev/null
+: >"$TMP/nudge-snap.log"
+: >"$TMP/nudge-status.log"
+FAKE_SNAP_LOG="$TMP/nudge-snap.log" FAKE_STATUS_LOG="$TMP/nudge-status.log" \
+  BRO_HOME="$NUDGE_HOME" BRO_NUDGE_INTERVAL=0.2 "$NUDGE_HOME/bin/bro-nudge-loop" &
+nudge_pid=$!
+for _ in $(seq 1 30); do
+  [[ "$(find "$NUDGE_HOME/inbox/pending" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')" -eq 2 ]] \
+    && grep -q nudge "$TMP/nudge-status.log" 2>/dev/null && break
+  sleep 0.1
+done
+kill "$nudge_pid" 2>/dev/null || true
+wait "$nudge_pid" 2>/dev/null || true
+nudge_notes="$(find "$NUDGE_HOME/inbox/pending" -type f -name '*.md' | wc -l | tr -d ' ')"
+[[ "$nudge_notes" -eq 2 ]] || fail "two due reminders did not fire two nudge notes (got $nudge_notes)"
+grep -rqx 'kind=nudge' "$NUDGE_HOME/inbox/pending" || fail "fired notes are not kind=nudge"
+grep -rql 'call mom' "$NUDGE_HOME/inbox/pending" || fail "the reminder text did not reach the note"
+grep -qx 'quiet=0' "$NUDGE_HOME/inbox/pending"/*.md || fail "outside quiet hours a nudge is not quiet"
+grep -q 'nudge' "$TMP/nudge-status.log" || fail "the bar was not told to say nudge"
+# One-off fired; daily re-armed; and across a full second of ticks nobody looked.
+fired_count="$(grep -lx 'state=fired' "$NUDGE_HOME/reminders"/*.md | wc -l | tr -d ' ')"
+armed_count="$(grep -lx 'state=armed' "$NUDGE_HOME/reminders"/*.md | wc -l | tr -d ' ')"
+[[ "$fired_count" -eq 1 && "$armed_count" -eq 1 ]] \
+  || fail "one-off should fire, daily should re-arm (fired=$fired_count armed=$armed_count)"
+[[ ! -s "$TMP/nudge-snap.log" ]] || fail "the nudge loop captured something — timers never look"
+# Inside quiet hours the same nudge arrives quiet=1.
+rm -rf "$NUDGE_HOME/inbox" "$NUDGE_HOME/reminders"
+printf '00:00-23:59\n' >"$NUDGE_HOME/state/quiet-hours"
+BRO_HOME="$NUDGE_HOME" "$NUDGE_HOME/bin/bro-remind" add "$past" 'late one' >/dev/null
+BRO_HOME="$NUDGE_HOME" BRO_NUDGE_INTERVAL=0.2 "$NUDGE_HOME/bin/bro-nudge-loop" &
+nudge_pid=$!
+for _ in $(seq 1 30); do
+  [[ -n "$(find "$NUDGE_HOME/inbox/pending" -type f -name '*.md' 2>/dev/null | head -1)" ]] && break
+  sleep 0.1
+done
+kill "$nudge_pid" 2>/dev/null || true
+wait "$nudge_pid" 2>/dev/null || true
+grep -qx 'quiet=1' "$NUDGE_HOME/inbox/pending"/*.md || fail "inside quiet hours a nudge must arrive quiet=1"
+rm -f "$NUDGE_HOME/state/quiet-hours"
+pass "the nudge loop fires reminders into the inbox and only ever looks at the clock"
+
+# The status loop passes nudge through like working: the bar holds nudge until
+# the backend claims the note.
+printf 'nudge\n' >"$ST_HOME/state/status-backend-word"
+PATH="$TMP/bin:$PATH" BRO_HOME="$ST_HOME" VOX_STATE="$TMP/vox/state/state.json" \
+  BRO_STATUS_INTERVAL=0.05 "$ST_HOME/bin/bro-status-loop" &
+nstale_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == nudge ]] && break
+  sleep 0.1
+done
+kill "$nstale_pid" 2>/dev/null || true
+wait "$nstale_pid" 2>/dev/null || true
+[[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == nudge ]] \
+  || fail "the status loop swallowed the nudge word"
+pass "the bar holds nudge until the backend takes over"
+
+# bro remind / brief / debrief from the front door.
+BRIEF_HOME="$TMP/brief-home"
+mkdir -p "$BRIEF_HOME/bin"
+cp "$ROOT/bin/bro-remind" "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-wake" "$BRIEF_HOME/bin/"
+BRO_HOME="$BRIEF_HOME" "$ROOT/bin/bro" remind '+30m' 'stretch' >/dev/null
+BRO_HOME="$BRIEF_HOME" "$ROOT/bin/bro" remind | grep -q 'stretch' \
+  || fail "bro remind does not list"
+BRO_HOME="$BRIEF_HOME" "$ROOT/bin/bro" brief >/dev/null
+brief_note="$(find "$BRIEF_HOME/inbox/pending" -type f -name '*.md' | sort | tail -1)"
+grep -qx 'role=brief' "$brief_note" || fail "an immediate brief is not marked role=brief"
+BRO_HOME="$BRIEF_HOME" "$ROOT/bin/bro" brief 8:00 >/dev/null
+grep -rlx 'role=brief' "$BRIEF_HOME/reminders" >/dev/null || fail "bro brief 8:00 armed no daily brief"
+grep -rlx 'repeat=daily' "$BRIEF_HOME/reminders" >/dev/null || fail "the scheduled brief is not daily"
+BRO_HOME="$BRIEF_HOME" "$ROOT/bin/bro" brief off >/dev/null
+left="$(grep -l 'role=brief' "$BRIEF_HOME"/reminders/*.md 2>/dev/null || true)"
+[[ -z "$left" ]] || fail "bro brief off left a brief reminder armed"
+# The boot prompt teaches the backend the whole nudge contract.
+grep -q 'kind=nudge' "$mprompt" || fail "the boot prompt does not explain kind=nudge"
+grep -q 'quiet=1' "$mprompt" || fail "the boot prompt does not explain quiet nudges"
+grep -q 'role=brief' "$mprompt" || fail "the boot prompt does not explain the brief role"
+grep -q 'role=debrief' "$mprompt" || fail "the boot prompt does not explain the debrief role"
+grep -q 'bro-remind add' "$mprompt" || fail "the boot prompt does not teach bro-remind"
+grep -q 'Never invent nudges' "$mprompt" || fail "the boot prompt does not forbid inventing nudges"
+pass "bro remind/brief/debrief work from the front door and the boot prompt owns the contract"

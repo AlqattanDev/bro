@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# bro-remind — the reminder store. Flat files in ~/.bro/reminders/, one per
+# reminder, plain headers like every other bro control file.
+#
+#   bro-remind add WHEN TEXT...   WHEN: +Nm | +Nh | HH:MM | YYYY-MM-DDTHH:MM
+#   bro-remind add --daily HH:MM TEXT...
+#   bro-remind list               armed and fired reminders, soonest first
+#   bro-remind cancel ID
+#   bro-remind due                ids of armed reminders whose time has come
+#   bro-remind mark-fired ID      state armed -> fired (re-arms daily ones)
+#
+# Natural language ("at 6", "tomorrow morning") is the backend's job — it
+# computes a concrete WHEN and calls add. After every mutation the soonest
+# armed reminder is rewritten to state/next-reminder for the menu bar.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+STATE="${BRO_STATE_DIR:-$BRO_HOME/state}"
+STORE="$BRO_HOME/reminders"
+NEXT="$STATE/next-reminder"
+mkdir -p "$STORE" "$STATE"
+
+now() { date +%s; }
+
+to_epoch() {
+  # to_epoch WHEN — prints an epoch or dies with usage on stderr.
+  local when="$1"
+  if [[ "$when" =~ ^\+([0-9]+)m$ ]]; then
+    echo $(( $(now) + BASH_REMATCH[1] * 60 )); return 0
+  fi
+  if [[ "$when" =~ ^\+([0-9]+)h$ ]]; then
+    echo $(( $(now) + BASH_REMATCH[1] * 3600 )); return 0
+  fi
+  if [[ "$when" =~ ^([0-9]{1,2}):([0-9]{2})$ ]]; then
+    local h="${BASH_REMATCH[1]#0}" m="${BASH_REMATCH[2]#0}" candidate
+    candidate="$(date -j -f '%Y-%m-%d %H:%M' "$(date +%Y-%m-%d) $(printf '%02d:%02d' "$h" "$m")" +%s)"
+    # A time that already passed today means tomorrow.
+    if (( candidate <= $(now) )); then
+      candidate=$(( candidate + 86400 ))
+    fi
+    echo "$candidate"; return 0
+  fi
+  if [[ "$when" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[T\ ][0-9]{2}:[0-9]{2}$ ]]; then
+    date -j -f '%Y-%m-%dT%H:%M' "${when/ /T}" +%s 2>/dev/null && return 0
+  fi
+  echo "bro-remind: cannot parse WHEN '$when' (use +Nm, +Nh, HH:MM, or YYYY-MM-DDTHH:MM)" >&2
+  return 2
+}
+
+rewrite_next() {
+  # The menu bar reads one small file, never this directory: "18:00 call mom".
+  local soonest="" soonest_epoch="" f e
+  for f in "$STORE"/*.md; do
+    [[ -e "$f" ]] || continue
+    grep -qx 'state=armed' "$f" || continue
+    e="$(sed -n 's/^when=//p' "$f")"
+    [[ "$e" =~ ^[0-9]+$ ]] || continue
+    if [[ -z "$soonest_epoch" || "$e" -lt "$soonest_epoch" ]]; then
+      soonest_epoch="$e"
+      soonest="$f"
+    fi
+  done
+  if [[ -n "$soonest" ]]; then
+    printf '%s %s\n' "$(date -j -f %s "$soonest_epoch" +%H:%M)" \
+      "$(sed -n 's/^text=//p' "$soonest" | cut -c1-40)" >"$NEXT"
+  else
+    rm -f "$NEXT"
+  fi
+}
+
+field() { sed -n "s/^$1=//p" "$2"; }
+
+cmd="${1:-list}"
+case "$cmd" in
+  add)
+    shift
+    repeat=none
+    role=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --daily) repeat=daily; shift ;;
+        --role) role="${2:-}"; shift 2 ;;
+        *) break ;;
+      esac
+    done
+    [[ $# -ge 2 ]] || { echo "usage: bro-remind add [--daily] [--role NAME] WHEN TEXT..." >&2; exit 2; }
+    when_spec="$1"; shift
+    text="$*"
+    epoch="$(to_epoch "$when_spec")" || exit 2
+    stamp="$(date '+%Y%m%dT%H%M%S')"
+    id="$stamp-$$-$RANDOM"
+    while [[ -e "$STORE/$id.md" ]]; do id="$stamp-$$-$RANDOM"; done
+    tmp="$STORE/.$id.tmp"
+    {
+      echo "id=$id"
+      echo "state=armed"
+      echo "when=$epoch"
+      echo "repeat=$repeat"
+      [[ -n "$role" ]] && echo "role=$role"
+      echo "text=$text"
+    } >"$tmp"
+    mv "$tmp" "$STORE/$id.md"
+    rewrite_next
+    echo "$id"
+    ;;
+  list)
+    found=0
+    for f in "$STORE"/*.md; do
+      [[ -e "$f" ]] || continue
+      state="$(field state "$f")"
+      [[ "$state" == done ]] && continue
+      found=1
+      when="$(field when "$f")"
+      repeat="$(field repeat "$f")"
+      daily=""
+      [[ "$repeat" == daily ]] && daily=" (daily)"
+      printf '%s  %s  [%s]%s %s\n' "$(field id "$f")" \
+        "$(date -j -f %s "$when" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$when")" \
+        "$state" "$daily" "$(field text "$f")"
+    done
+    (( found )) || echo "no reminders — add one: bro remind '+30m' stretch"
+    ;;
+  cancel)
+    id="${2:-}"
+    [[ -n "$id" && -f "$STORE/$id.md" ]] || { echo "no reminder: $id" >&2; exit 1; }
+    rm -f "$STORE/$id.md"
+    rewrite_next
+    echo "cancelled $id"
+    ;;
+  due)
+    for f in "$STORE"/*.md; do
+      [[ -e "$f" ]] || continue
+      grep -qx 'state=armed' "$f" || continue
+      when="$(field when "$f")"
+      [[ "$when" =~ ^[0-9]+$ ]] || continue
+      (( when <= $(now) )) && field id "$f"
+    done
+    ;;
+  mark-fired)
+    id="${2:-}"
+    f="$STORE/$id.md"
+    [[ -n "$id" && -f "$f" ]] || { echo "no reminder: $id" >&2; exit 1; }
+    if [[ "$(field repeat "$f")" == daily ]]; then
+      # Daily reminders fire, then arm themselves for the same time tomorrow.
+      new_when=$(( $(field when "$f") + 86400 ))
+      while (( new_when <= $(now) )); do new_when=$(( new_when + 86400 )); done
+      tmp="$f.tmp.$$"
+      sed -e "s/^when=.*/when=$new_when/" "$f" >"$tmp"
+      mv "$tmp" "$f"
+    else
+      tmp="$f.tmp.$$"
+      sed -e 's/^state=armed/state=fired/' "$f" >"$tmp"
+      mv "$tmp" "$f"
+    fi
+    rewrite_next
+    ;;
+  next)
+    cat "$NEXT" 2>/dev/null || true
+    ;;
+  *)
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac
