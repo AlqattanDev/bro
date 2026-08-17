@@ -66,6 +66,7 @@ bro — full-screen work + hidden agent + clean board
   bro daemon install|uninstall     Run the backend at login under launchd
   bro daemon status|restart        (install is explicit — never automatic)
   bro doctor                       Check the whole machine story, ✓/✗ with fixes
+  bro update                       Pull, test, rebuild, restart — the one ritual
   bro verify                       Keyboard checklist for what no test can reach
   bro help
 
@@ -256,6 +257,9 @@ case "$cmd" in
     ;;
   doctor)
     exec "$BRO_HOME/bin/bro-doctor"
+    ;;
+  update)
+    exec "$BRO_HOME/bin/bro-update"
     ;;
   remember)
     shift

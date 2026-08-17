@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# bro-update — the one-command upgrade ritual.
+#
+#   git pull --ff-only → run the tests → rebuild + re-sign BroBar → restart.
+#
+# Restart means `bro daemon restart` when the LaunchAgent is installed (it
+# brings everything back under launchd) and `bro stop && bro backend-up`
+# otherwise. Signing stays on the stable identity, so an Accessibility grant
+# survives the rebuild. Nothing here installs the agent — that stays explicit.
+set -euo pipefail
+
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
+cd "$BRO_HOME"
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "bro-update: $BRO_HOME is not a git checkout — update it by hand" >&2
+  exit 1
+fi
+
+before="$(git rev-parse --short HEAD)"
+git pull --ff-only
+after="$(git rev-parse --short HEAD)"
+
+if [[ "$before" == "$after" ]]; then
+  echo "already up to date ($after)"
+else
+  echo "updated $before → $after:"
+  git log --oneline "$before..$after" | sed 's/^/  /'
+fi
+
+# The suite gates the restart: a bad pull never reaches the running bro.
+if [[ -z "${BRO_UPDATE_SKIP_TESTS:-}" ]]; then
+  echo "running tests…"
+  bash "$BRO_HOME/tests/run"
+fi
+
+if [[ -x "$BRO_HOME/bin/build-bro-bar" ]]; then
+  "$BRO_HOME/bin/build-bro-bar"
+fi
+
+# Restart under whichever owner the backend has.
+if "$BRO_HOME/bin/bro-daemon" status 2>/dev/null | grep -q 'launchd: loaded'; then
+  "$BRO_HOME/bin/bro-daemon" restart
+else
+  "$BRO_HOME/bin/bro" stop >/dev/null 2>&1 || true
+  "$BRO_HOME/bin/bro" backend-up
+fi
+echo "bro is up to date and restarted."
