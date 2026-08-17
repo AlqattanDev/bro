@@ -4,22 +4,6 @@ Rule: one phase per session. Finish, verify, commit explicit paths, delete the
 phase from this file, run /handoff. When no phases remain, replace this file's
 body with exactly `DONE`.
 
-## Phase 1 — global face: menu bar status
-
-Bro's state visible from any app, not only a bro tmux client.
-
-- New `macos/BroBar.swift` in this repo (`~/.bro`): an NSStatusItem app.
-  Every 0.5s read `~/.bro/status-word` and `~/.bro/mode`; render the word as
-  the item title with a colored SF-symbol dot (working=yellow, speaking=purple,
-  listening=blue, ready=green — same palette as `bin/bro-status-paint`).
-  Clicking the item runs `~/.bro/bin/bro-wake` (open a bro terminal or focus it).
-- Build script `bin/build-bro-bar` mirroring `~/vox-mcp/scripts/build_macos_app.sh`
-  (swiftc, ad-hoc sign is fine — no TCC-gated features used).
-- `bin/bro` starts BroBar if not running (alongside the status loop, same
-  nohup pattern); `bro stop` kills it.
-- Accept: change `status-word` by hand → menu bar follows within 1s, with no
-  bro terminal visible anywhere. tmux bar keeps working unchanged.
-
 ## Phase 2 — global eyes: screen snapshot
 
 - `bin/bro-snapshot --screen`: `screencapture -x` the main display to

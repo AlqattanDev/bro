@@ -87,6 +87,33 @@ start_status_loop() {
   echo $! >"$pidfile"
 }
 
+bro_bar_bin() {
+  # Built by bin/build-bro-bar. Absent on a machine that never built it.
+  printf '%s\n' "${BRO_BAR_BIN:-$BRO_HOME/dist/BroBar.app/Contents/MacOS/BroBar}"
+}
+
+start_bro_bar() {
+  # The menu bar face. Same nohup+pidfile shape as the loops above, launching
+  # the app's executable directly so the pid we record is the one we can kill.
+  local bar
+  bar="$(bro_bar_bin)"
+  [[ -x "$bar" ]] || return 0
+  local pidfile="$BRO_HOME/bro-bar.pid"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    return 0
+  fi
+  nohup "$bar" >>"$BRO_HOME/logs/bro-bar.log" 2>&1 &
+  echo $! >"$pidfile"
+}
+
+stop_bro_bar() {
+  local pidfile="$BRO_HOME/bro-bar.pid"
+  if [[ -f "$pidfile" ]]; then
+    kill "$(cat "$pidfile")" 2>/dev/null || true
+    rm -f "$pidfile"
+  fi
+}
+
 stop_watch_loop() {
   local pidfile="$WATCH/watch.pid"
   if [[ -f "$pidfile" ]]; then
@@ -104,6 +131,7 @@ create_session() {
   ensure_dirs
   start_watch_loop
   start_status_loop
+  start_bro_bar
 
   # Window "you": full work surface
   "${TMUXC[@]}" new-session -d -s "$SESSION" -n you \
@@ -130,6 +158,7 @@ case "$cmd" in
     else
       start_watch_loop
       start_status_loop
+      start_bro_bar
     fi
     exec "${TMUXC[@]}" attach -t "$SESSION"
     ;;
@@ -173,6 +202,7 @@ case "$cmd" in
     ;;
   stop)
     stop_watch_loop
+    stop_bro_bar
     "${TMUXC[@]}" kill-session -t "$SESSION" 2>/dev/null || true
     "${TMUXC[@]}" kill-session -t bro-popup 2>/dev/null || true
     echo "bro session stopped."

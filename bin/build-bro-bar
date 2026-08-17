@@ -1,0 +1,26 @@
+#!/bin/zsh
+# Build dist/BroBar.app — bro's menu bar face.
+#
+# Ad-hoc signing unconditionally: BroBar uses no TCC-gated capability (no mic,
+# no Accessibility, no screen recording), so a fresh cdhash on every build
+# revokes nothing. That is why this is much shorter than vox-mcp's equivalent.
+set -euo pipefail
+
+ROOT="${0:A:h:h}"
+APP="$ROOT/dist/BroBar.app"
+CONTENTS="$APP/Contents"
+MACOS="$CONTENTS/MacOS"
+
+rm -rf "$APP"
+mkdir -p "$MACOS"
+/usr/bin/swiftc \
+  -swift-version 5 \
+  -target arm64-apple-macosx13.0 \
+  -O \
+  -framework AppKit \
+  "$ROOT/macos/BroBar.swift" \
+  -o "$MACOS/BroBar"
+/bin/cp "$ROOT/macos/Info.plist" "$CONTENTS/Info.plist"
+/usr/bin/plutil -lint "$CONTENTS/Info.plist"
+/usr/bin/codesign --force --deep --sign - "$APP"
+echo "$APP"

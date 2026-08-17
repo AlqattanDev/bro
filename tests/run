@@ -102,6 +102,45 @@ kill "$second_status_pid" "$watch_pid" 2>/dev/null || true
 wait "$second_status_pid" "$watch_pid" 2>/dev/null || true
 pass "every attach supervises and restarts the status loop"
 
+BAR_HOME="$TMP/bar-home"
+mkdir -p "$BAR_HOME/bin" "$BAR_HOME/logs" "$BAR_HOME/watch"
+cp "$ROOT/bin/bro" "$BAR_HOME/bin/"
+cat >"$BAR_HOME/bin/bro-watch-loop" <<'EOF'
+#!/usr/bin/env bash
+while true; do sleep 10; done
+EOF
+cp "$BAR_HOME/bin/bro-watch-loop" "$BAR_HOME/bin/bro-status-loop"
+cat >"$BAR_HOME/bin/bro-snapshot" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$BAR_HOME/bin/"*
+# No dist/BroBar.app built: bro must start anyway and leave no bar pidfile.
+PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" attach \
+  || fail "bro starts with no BroBar built"
+[[ ! -e "$BAR_HOME/bro-bar.pid" ]] || fail "bro writes no bar pidfile without dist"
+PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" stop >/dev/null
+# Now with a stub executable standing in for the built app.
+mkdir -p "$BAR_HOME/dist/BroBar.app/Contents/MacOS"
+cat >"$BAR_HOME/dist/BroBar.app/Contents/MacOS/BroBar" <<'EOF'
+#!/usr/bin/env bash
+while true; do sleep 10; done
+EOF
+chmod +x "$BAR_HOME/dist/BroBar.app/Contents/MacOS/BroBar"
+PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" attach
+bar_pid="$(cat "$BAR_HOME/bro-bar.pid")"
+kill -0 "$bar_pid" 2>/dev/null || fail "bro starts BroBar and records a live pid"
+PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" attach
+[[ "$(cat "$BAR_HOME/bro-bar.pid")" == "$bar_pid" ]] || fail "second attach reuses the live BroBar"
+PATH="$TMP/bin:$PATH" BRO_HOME="$BAR_HOME" "$BAR_HOME/bin/bro" stop >/dev/null
+[[ ! -e "$BAR_HOME/bro-bar.pid" ]] || fail "bro stop removes the bar pidfile"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  kill -0 "$bar_pid" 2>/dev/null || break
+  sleep 0.1
+done
+kill -0 "$bar_pid" 2>/dev/null && fail "bro stop kills BroBar"
+pass "bro starts BroBar when built, skips it when not, and stop kills it"
+
 QUEUE_HOME="$TMP/queue-home"
 mkdir -p "$QUEUE_HOME/bin"
 cp "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-wake" "$QUEUE_HOME/bin/"

@@ -12,6 +12,7 @@ status-owner
 status-loop.pid
 /backend
 /mode
+/dist/
 /show-policy
 /speakers/
 __pycache__/

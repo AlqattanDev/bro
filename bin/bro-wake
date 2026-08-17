@@ -1,14 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+BRO_HOME="${BRO_HOME:-$HOME/.bro}"
 SOCKET="${BRO_TMUX_SOCKET:-bro}"
 SESSION="${BRO_SESSION:-bro}"
+TERMINAL_APP="${BRO_TERMINAL_APP:-Terminal}"
 reason="${1:-event}"
 
+open_terminal() {
+  # Only the menu bar click should ever pull a window to the front; queue
+  # wakeups stay silent.
+  [[ "$reason" == menubar ]] || return 0
+  command -v open >/dev/null 2>&1 || return 0
+  "$@" || true
+}
+
 if ! tmux -L "$SOCKET" has-session -t "$SESSION" 2>/dev/null; then
+  # No session: a click means "give me bro", so start one in a terminal.
+  open_terminal open -a "$TERMINAL_APP" "$BRO_HOME/bin/bro"
   exit 0
 fi
 
 message="[bro $reason queued — run: bro-inbox claim]"
 tmux -L "$SOCKET" send-keys -t "$SESSION:me" -l -- "$message" 2>/dev/null || exit 0
 tmux -L "$SOCKET" send-keys -t "$SESSION:me" Enter 2>/dev/null || true
+
+# Session already alive: raise its terminal so the click lands somewhere.
+open_terminal open -a "$TERMINAL_APP"
