@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# Claim (or release) the job of showing voice state in the macOS menu bar.
+#
+# Vox and bro used to draw two menu bar items that said the same thing whenever
+# bro was speaking or listening. Only one of them has to survive, and it should
+# be bro's: bro already renders voice state (bin/bro-status-loop folds the Vox
+# state file into ~/.bro/status-word), and Vox is shared infrastructure that
+# cannot assume bro exists at all.
+#
+# So the handoff runs the other way round, through a file that lives in *Vox's*
+# own directory and mentions nobody by name:
+#
+#     ~/.vox/status-host.json   {"name":"bro","pid":1234,"since":1786990000}
+#
+# While that file names a LIVE pid, Vox hides its own status item and leaves the
+# display to whoever claimed it. Nothing else changes: the hotkey, the HUD pill
+# and the runtime are untouched. No file, a dead pid, or no claimant at all and
+# Vox shows its item exactly as it does today — which is what a machine with no
+# bro on it will always see. The pid is the whole safety mechanism: if BroBar is
+# killed with SIGTERM, crashes, or never gets to clean up, Vox notices within a
+# poll and takes its icon back.
+#
+# Parsing lives here rather than inside the compiled app for the same reason
+# bin/bro-hotkeys does: a control file that shell can write is a control file
+# tests/run can prove.
+#
+# Usage:
+#   bro-status-host claim [pid]     claim the menu bar for that pid (default $PPID)
+#   bro-status-host release [pid]   drop the claim (only ours, if a pid is given)
+#   bro-status-host show            print the current claim, or "none"
+#   bro-status-host path            print the claim file path
+set -euo pipefail
+
+FILE="${VOX_STATUS_HOST_FILE:-${VOX_HOME:-$HOME/.vox}/status-host.json}"
+NAME="${BRO_STATUS_HOST_NAME:-bro}"
+
+claim_pid() {
+  # Deliberately not jq: this must work on a machine with nothing installed,
+  # and the file is written right here in a fixed shape.
+  sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$FILE" 2>/dev/null | head -1
+}
+
+cmd="${1:-show}"
+case "$cmd" in
+  claim)
+    pid="${2:-$PPID}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || { echo "usage: bro-status-host claim <pid>" >&2; exit 2; }
+    mkdir -p "$(dirname "$FILE")"
+    tmp="$FILE.$$"
+    printf '{"name":"%s","pid":%s,"since":%s}\n' "$NAME" "$pid" "$(date +%s)" >"$tmp"
+    # Atomic: Vox reads this file on its own clock and must never see half of it.
+    mv -f "$tmp" "$FILE"
+    ;;
+  release)
+    pid="${2:-}"
+    if [[ -n "$pid" && -f "$FILE" ]]; then
+      # Never yank someone else's claim: if another menu bar took over after us,
+      # releasing ours would hide nothing and un-hide Vox behind its back.
+      [[ "$(claim_pid)" == "$pid" ]] || exit 0
+    fi
+    rm -f "$FILE"
+    ;;
+  show|status)
+    if [[ -f "$FILE" ]]; then cat "$FILE"; else echo none; fi
+    ;;
+  path)
+    printf '%s\n' "$FILE"
+    ;;
+  *)
+    echo "usage: bro-status-host claim|release|show|path" >&2
+    exit 2
+    ;;
+esac

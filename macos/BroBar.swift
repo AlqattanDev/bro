@@ -5,6 +5,15 @@
 // the item runs bin/bro-wake. No dock icon (LSUIElement), no terminal or tmux
 // required, and every file read is best-effort: a missing or unreadable file
 // degrades to the same defaults bro-status-paint uses ("ready" / "call").
+//
+// It is also the ONLY voice status item on screen. While BroBar runs it claims
+// the menu bar through bin/bro-status-host (see that script for the protocol)
+// and Vox hides its own item, so "speaking" and "listening" are said once
+// instead of twice. Everything Vox's item did is therefore done here: the red
+// live-mic glyph, its tooltips, a left-click that ends the turn while the mic is
+// hot, and a right-click menu carrying its controls. Vox stays reachable and
+// unaware of bro — the claim can be dropped from this very menu, and Vox's item
+// comes straight back.
 
 import AppKit
 import Carbon.HIToolbox
@@ -24,6 +33,147 @@ enum BroPaths {
     static var mode: URL { home.appendingPathComponent("mode") }
     static var wake: URL { home.appendingPathComponent("bin/bro-wake") }
     static var hotkeysTool: URL { home.appendingPathComponent("bin/bro-hotkeys") }
+    static var statusHostTool: URL { home.appendingPathComponent("bin/bro-status-host") }
+
+    /// Vox's own directory. Only ever read for the control token and opened in
+    /// Finder from the menu — bro never writes Vox's state.
+    static var voxHome: URL {
+        let env = ProcessInfo.processInfo.environment
+        if let override = env["VOX_HOME"], !override.isEmpty {
+            return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+        }
+        return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".vox")
+    }
+}
+
+// MARK: - Vox
+
+/// Everything the menu bar needs to know about the voice service, in the shape
+/// Vox's own status item used. It is `Equatable` so a render can be skipped when
+/// nothing moved, exactly like the word/mode pair.
+struct VoxSnapshot: Equatable {
+    var reachable = false
+    var state = ""
+    var micOpen = false
+    /// Vox is speaking *and* listening: talk over it to interrupt. Bro's status
+    /// word says only "speaking", so without this the live mic would vanish.
+    var bargeIn = false
+    var detail = ""
+    var lastStopReason = ""
+    var ioMode = "talk"
+    var lastSpokenAgent = ""
+    var agents: [String] = []
+    var notesWaiting: [String] = []
+}
+
+/// bro's side of the Vox HTTP contract: the same `/health` poll and `/control`
+/// POST that Vox's own status item makes, so the controls that used to live
+/// behind that icon still work now that it is hidden. Vox knows nothing about
+/// this — the endpoint is the one every Vox client already uses.
+final class VoxLink {
+    private(set) var snapshot = VoxSnapshot()
+    private var inFlight = false
+    private let baseURL: URL = {
+        let env = ProcessInfo.processInfo.environment
+        if let override = env["VOX_URL"], let url = URL(string: override) { return url }
+        return URL(string: "http://127.0.0.1:8766")!
+    }()
+
+    /// True once Vox has answered at least once. An "offline" warning is only
+    /// honest about a service that was there; on a machine with no Vox at all
+    /// the menu bar must stay quiet.
+    private(set) var everReachable = false
+
+    func poll(_ completion: @escaping () -> Void) {
+        guard !inFlight else { return }
+        inFlight = true
+        var request = URLRequest(url: baseURL.appendingPathComponent("health"))
+        request.timeoutInterval = 1.0
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.inFlight = false
+                guard
+                    let data,
+                    let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    // Unreachable is a state, not an error: keep the last known
+                    // words, drop everything that claims the mic is live.
+                    var offline = VoxSnapshot()
+                    offline.detail = self.snapshot.detail
+                    self.snapshot = offline
+                    completion()
+                    return
+                }
+                self.everReachable = true
+                var next = VoxSnapshot()
+                next.reachable = true
+                next.state = ((payload["state"] as? String)
+                    ?? (payload["status"] as? String) ?? "online").lowercased()
+                next.micOpen = (payload["microphone_open"] as? Bool) ?? false
+                next.bargeIn = (payload["mic_armed_for_barge_in"] as? Bool) ?? false
+                next.detail = (payload["detail"] as? String) ?? ""
+                next.lastStopReason = (payload["last_stop_reason"] as? String) ?? ""
+                next.ioMode = ((payload["io_mode"] as? String) ?? "talk").lowercased()
+                next.lastSpokenAgent = (payload["last_spoken_agent"] as? String) ?? ""
+                next.agents = (payload["agents"] as? [String]) ?? []
+                next.notesWaiting = (payload["notes_waiting"] as? [String]) ?? []
+                self.snapshot = next
+                completion()
+            }
+        }.resume()
+    }
+
+    /// Fire and forget, like every control Vox's own menu sent. Never serialized:
+    /// a swallowed `end_turn` would leave the microphone open with no way to
+    /// close it, which is the failure Vox's own comment warns about.
+    func send(_ action: String, extra: [String: Any] = [:]) {
+        var request = URLRequest(url: baseURL.appendingPathComponent("control"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 6.0
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("bro-bar", forHTTPHeaderField: "X-Vox-Control-Source")
+        if let token = try? String(
+            contentsOf: BroPaths.voxHome.appendingPathComponent("control.token"), encoding: .utf8
+        ) {
+            request.setValue(
+                token.trimmingCharacters(in: .whitespacesAndNewlines), forHTTPHeaderField: "X-Vox-Token"
+            )
+        }
+        var payload: [String: Any] = ["action": action]
+        payload.merge(extra) { _, new in new }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        URLSession.shared.dataTask(with: request).resume()
+    }
+}
+
+/// The claim that hides Vox's status item, driven entirely by bin/bro-status-host
+/// so the file format has exactly one owner and tests/run can prove it.
+enum StatusHostClaim {
+    @discardableResult
+    static func run(_ arguments: [String]) -> Bool {
+        let tool = BroPaths.statusHostTool
+        guard FileManager.default.isExecutableFile(atPath: tool.path) else { return false }
+        let task = Process()
+        task.executableURL = tool
+        task.arguments = arguments
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        var environment = ProcessInfo.processInfo.environment
+        environment["BRO_HOME"] = BroPaths.home.path
+        task.environment = environment
+        guard (try? task.run()) != nil else { return false }
+        task.waitUntilExit()
+        return task.terminationStatus == 0
+    }
+
+    static func claim() -> Bool {
+        run(["claim", String(ProcessInfo.processInfo.processIdentifier)])
+    }
+
+    static func release() -> Bool {
+        run(["release", String(ProcessInfo.processInfo.processIdentifier)])
+    }
 }
 
 // MARK: - Hotkeys
@@ -158,17 +308,32 @@ final class BroBar: NSObject, NSApplicationDelegate {
     /// guarantee while this one can be typed into.
     private let summon = BroSummon()
     private var hotKeyRefs: [EventHotKeyRef] = []
-    /// Last rendered (word, mode). The status item is only touched when this
-    /// changes, so the common case — nothing happening — costs two file reads.
-    private var rendered: (word: String, mode: String)?
+    /// The voice service, polled on the same timer as the status files.
+    private let vox = VoxLink()
+    /// Whether Vox's own status item is currently hidden in favour of this one.
+    /// Flipped from the menu, so the full Vox panel is always one click away.
+    private var claimingStatusBar = false
+    /// Last rendered state. The status item is only touched when this changes,
+    /// so the common case — nothing happening — costs two file reads.
+    private struct Rendered: Equatable {
+        var word: String
+        var mode: String
+        var vox: VoxSnapshot
+    }
+    private var rendered: Rendered?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(clicked)
+        // Right-click has to reach the same action, or the voice controls that
+        // used to live in Vox's popover would be unreachable.
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         panel.start()
         registerHotKeys()
+        // One icon in the menu bar: from here on Vox draws none.
+        claimingStatusBar = StatusHostClaim.claim()
 
         refresh()
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
@@ -178,10 +343,19 @@ final class BroBar: NSObject, NSApplicationDelegate {
     }
 
     private func refresh() {
+        // The health answer lands a moment later and paints again; the file read
+        // below is what keeps the word instant.
+        vox.poll { [weak self] in self?.render() }
+        render()
+    }
+
+    private func render() {
         let word = readWord(BroPaths.statusWord, fallback: "ready")
         let mode = readWord(BroPaths.mode, fallback: "call")
-        if let rendered = rendered, rendered.word == word, rendered.mode == mode { return }
-        rendered = (word, mode)
+        let voice = vox.snapshot
+        let next = Rendered(word: word, mode: mode, vox: voice)
+        if rendered == next { return }
+        rendered = next
 
         guard let button = statusItem.button else { return }
         let title = NSMutableAttributedString(
@@ -199,6 +373,80 @@ final class BroBar: NSObject, NSApplicationDelegate {
             ]
         ))
         button.attributedTitle = title
+        button.image = voiceGlyph(voice)
+        button.imagePosition = button.image == nil ? .noImage : .imageLeading
+        button.toolTip = tooltip(word: word, mode: mode, vox: voice)
+    }
+
+    /// The half of Vox's icon that bro's word cannot say.
+    ///
+    /// Only those states get a glyph: "speaking", "working" and "ready" are
+    /// already the word next to it, and drawing a symbol for them too would just
+    /// say everything twice again. The live-mic red is copied from Vox exactly,
+    /// pixels and all — see applyStatusGlyph in ~/vox-mcp/macos/VoxStatus.swift
+    /// for why the colour is baked rather than left to the system to tint.
+    private func voiceGlyph(_ vox: VoxSnapshot) -> NSImage? {
+        let symbol: String
+        var live = false
+        if vox.bargeIn {
+            symbol = "waveform.badge.mic"; live = true
+        } else if vox.micOpen {
+            symbol = "mic.fill"; live = true
+        } else if !vox.reachable {
+            // Nothing at all until Vox has been seen once: a machine without it
+            // must not grow a permanent warning triangle.
+            guard self.vox.everReachable else { return nil }
+            symbol = "exclamationmark.triangle"
+        } else {
+            switch vox.state {
+            case "paused": symbol = "pause.circle"
+            case "off": symbol = "mic.slash.circle"
+            case "error", "offline": symbol = "exclamationmark.triangle"
+            default: return nil
+            }
+        }
+        let darkMenuBar = UserDefaults.standard.string(forKey: "AppleInterfaceStyle")?
+            .lowercased() == "dark"
+        let glyphColor: NSColor = live ? .systemRed : (darkMenuBar ? .white : .black)
+        let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [glyphColor]))
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: symbol)?
+            .withSymbolConfiguration(config)
+        image?.isTemplate = false
+        return image
+    }
+
+    /// Vox's tooltips, kept word for word where they were about the microphone —
+    /// they are the sentence that tells you the mic is open and that a click
+    /// closes it.
+    private func tooltip(word: String, mode: String, vox: VoxSnapshot) -> String {
+        let detail = voiceDetail(vox)
+        let head: String
+        if vox.bargeIn {
+            head = "Mic is LIVE while Vox speaks — just start talking to interrupt."
+        } else if vox.micOpen {
+            head = "Mic is LIVE — click to stop listening."
+        } else {
+            head = "bro — \(prefix(for: mode))\(word). Click to wake bro."
+        }
+        let voiceLine = detail.isEmpty ? "" : " \(detail)"
+        return head + voiceLine + " Right-click for voice controls."
+    }
+
+    /// Vox's panelDetail(), which is what its tooltip appended.
+    private func voiceDetail(_ vox: VoxSnapshot) -> String {
+        if !vox.notesWaiting.isEmpty {
+            let targets = vox.notesWaiting.map { $0 == "*" ? "any agent" : $0 }
+                .joined(separator: ", ")
+            return "Note waiting for: \(targets) — delivered on that agent's next turn."
+        }
+        if vox.state == "off", vox.lastStopReason == "idle_timeout" {
+            return "Stopped after 10 minutes without activity. The microphone is closed."
+        }
+        if !vox.reachable {
+            return self.vox.everReachable ? "Vox is offline." : ""
+        }
+        return vox.detail
     }
 
     // MARK: - Global summon
@@ -280,7 +528,156 @@ final class BroBar: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Vox's statusItemClicked, on bro's item.
+    ///
+    /// A left-click while the microphone is live ends the turn — it preserves
+    /// what was said and sends it to transcription, unlike cancel. That was the
+    /// fix for "I can stop talking but you can't stop listening", and it would
+    /// have been the first thing lost by hiding Vox's icon. Everything else is
+    /// bro's own wake, and a right-click opens the voice controls.
     @objc private func clicked() {
+        let event = NSApp.currentEvent
+        let rightClick = event?.type == .rightMouseUp
+            || (event?.modifierFlags.contains(.control) ?? false)
+        if rightClick {
+            showVoiceMenu()
+            return
+        }
+        if vox.snapshot.micOpen {
+            vox.send("end_turn")
+            return
+        }
+        wakeBro()
+    }
+
+    /// What Vox's popover and its More… menu offered, as one menu. The panel's
+    /// waveform is not reproduced here because it was never only in the panel:
+    /// the floating HUD pill still draws it, and it is still Vox drawing it.
+    private func showVoiceMenu() {
+        let voice = vox.snapshot
+        let menu = NSMenu()
+
+        if voice.reachable {
+            if voice.state == "speaking" {
+                menu.addItem(item("Stop reading", #selector(voiceCancel)))
+            }
+            if voice.micOpen {
+                menu.addItem(item("Stop listening — send what I said", #selector(voiceEndTurn)))
+            }
+            let reply = voice.lastSpokenAgent.isEmpty
+                ? "Reply" : "Reply to \(voice.lastSpokenAgent)"
+            let replyItem = item(reply, #selector(voiceReply))
+            replyItem.isEnabled = voice.state == "idle" && !voice.micOpen
+            menu.addItem(replyItem)
+            menu.addItem(item("Repeat the last thing Vox said", #selector(voiceRepeat)))
+
+            let modes = NSMenu()
+            for (name, label) in [("talk", "Talk"), ("narrate", "Narrate"), ("dictate", "Dictate")] {
+                let entry = item(label, #selector(voiceSetMode(_:)))
+                entry.representedObject = name
+                entry.state = voice.ioMode == name ? .on : .off
+                modes.addItem(entry)
+            }
+            let modeItem = NSMenuItem(title: "Voice mode", action: nil, keyEquivalent: "")
+            modeItem.submenu = modes
+            menu.addItem(modeItem)
+
+            let notes = NSMenu()
+            for agent in voice.agents {
+                let waiting = voice.notesWaiting.contains(agent)
+                let entry = item(waiting ? "\(agent)   ● note waiting" : agent, #selector(voiceNote(_:)))
+                entry.representedObject = agent
+                notes.addItem(entry)
+            }
+            if !voice.agents.isEmpty { notes.addItem(NSMenuItem.separator()) }
+            let anyAgent = item("Any agent (first to check)", #selector(voiceNote(_:)))
+            anyAgent.representedObject = ""
+            notes.addItem(anyAgent)
+            let noteItem = NSMenuItem(title: "Leave a note for…", action: nil, keyEquivalent: "")
+            noteItem.submenu = notes
+            noteItem.isEnabled = voice.state == "idle"
+            menu.addItem(noteItem)
+
+            menu.addItem(NSMenuItem.separator())
+            switch voice.state {
+            case "off", "offline", "error":
+                menu.addItem(item("Turn Vox on", #selector(voiceStart)))
+            case "paused":
+                menu.addItem(item("Resume Vox", #selector(voiceResume)))
+            default:
+                menu.addItem(item("Turn Vox off", #selector(voiceStop)))
+            }
+        } else {
+            let dead = NSMenuItem(
+                title: vox.everReachable ? "Vox is offline" : "Vox is not running",
+                action: nil,
+                keyEquivalent: ""
+            )
+            dead.isEnabled = false
+            menu.addItem(dead)
+        }
+
+        menu.addItem(NSMenuItem.separator())
+        // The escape hatch that makes hiding Vox's icon safe rather than final:
+        // Vox's own item — and with it its panel, its restart control and
+        // anything bro has not mirrored — is one click away, and comes back
+        // within a second because the claim file is simply gone.
+        menu.addItem(item(
+            claimingStatusBar ? "Show Vox's own menu bar icon" : "Hide Vox's menu bar icon (bro shows it)",
+            #selector(toggleStatusClaim)
+        ))
+        menu.addItem(item("Open the Vox folder", #selector(openVoxFolder)))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(item("Wake bro", #selector(wakeBroFromMenu)))
+
+        for entry in menu.items where entry.action != nil { entry.target = self }
+        // popUp, not statusItem.menu: assigning a menu would take the click away
+        // from the action above, and the left-click end-turn would be gone.
+        guard let button = statusItem.button else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    private func item(_ title: String, _ action: Selector) -> NSMenuItem {
+        NSMenuItem(title: title, action: action, keyEquivalent: "")
+    }
+
+    @objc private func voiceCancel() { vox.send("cancel") }
+    @objc private func voiceEndTurn() { vox.send("end_turn") }
+    @objc private func voiceRepeat() { vox.send("repeat") }
+    @objc private func voiceReply() { vox.send("reply") }
+    @objc private func voiceStart() { vox.send("start") }
+    @objc private func voiceResume() { vox.send("resume") }
+    @objc private func voiceStop() { vox.send("stop") }
+
+    @objc private func voiceSetMode(_ sender: NSMenuItem) {
+        guard let mode = sender.representedObject as? String else { return }
+        vox.send("set_mode", extra: ["mode": mode])
+    }
+
+    @objc private func voiceNote(_ sender: NSMenuItem) {
+        let target = (sender.representedObject as? String) ?? ""
+        vox.send("note", extra: target.isEmpty ? [:] : ["target_agent": target])
+    }
+
+    @objc private func toggleStatusClaim() {
+        claimingStatusBar = claimingStatusBar
+            ? !StatusHostClaim.release()
+            : StatusHostClaim.claim()
+    }
+
+    @objc private func openVoxFolder() {
+        NSWorkspace.shared.open(BroPaths.voxHome)
+    }
+
+    @objc private func wakeBroFromMenu() { wakeBro() }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Best effort only. A SIGTERM or a crash never reaches this, which is
+        // exactly why the claim carries a pid: Vox checks the claimant is alive.
+        _ = StatusHostClaim.release()
+    }
+
+    private func wakeBro() {
         let wake = BroPaths.wake
         guard FileManager.default.isExecutableFile(atPath: wake.path) else { return }
         let task = Process()

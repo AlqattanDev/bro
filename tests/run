@@ -707,3 +707,70 @@ PY
 else
   pass "bro-speakers tests skipped (no numpy python)"
 fi
+
+# One menu bar, not two. bro's item shows voice state already, so BroBar claims
+# the display and Vox hides its own item — through a file in VOX's directory
+# that names a pid and nothing else, so Vox never learns bro exists.
+HOST="$ROOT/bin/bro-status-host"
+HOST_HOME="$TMP/vox-host"
+mkdir -p "$HOST_HOME"
+CLAIM="$HOST_HOME/status-host.json"
+host_env=(VOX_STATUS_HOST_FILE="$CLAIM")
+[[ "$(env "${host_env[@]}" "$HOST" show)" == none ]] || fail "no claim reads as none"
+# The default lives in Vox's own directory, never in bro's.
+default_path="$(VOX_HOME="$TMP/vox-default" "$HOST" path)"
+[[ "$default_path" == "$TMP/vox-default/status-host.json" ]] \
+  || fail "the claim file belongs to Vox, not bro (got $default_path)"
+env "${host_env[@]}" "$HOST" claim 4242
+[[ -f "$CLAIM" ]] || fail "claim writes the claim file"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["pid"]==4242 and d["name"]=="bro"' "$CLAIM" \
+  || fail "the claim is valid JSON carrying the claimant name and pid"
+# Claiming again replaces, it never appends a second object.
+env "${host_env[@]}" "$HOST" claim 4243
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["pid"]==4243' "$CLAIM" \
+  || fail "a second claim replaces the first"
+[[ "$(find "$HOST_HOME" -name 'status-host.json.*' | wc -l | tr -d ' ')" -eq 0 ]] \
+  || fail "claiming left a temp file behind next to the real one"
+# Releasing is only ever your own claim: another menu bar took over means the
+# icon it hid is not ours to give back.
+env "${host_env[@]}" "$HOST" release 4242
+[[ -f "$CLAIM" ]] || fail "release with a foreign pid dropped someone else's claim"
+env "${host_env[@]}" "$HOST" release 4243
+[[ ! -e "$CLAIM" ]] || fail "release with the owning pid drops the claim"
+[[ "$(env "${host_env[@]}" "$HOST" show)" == none ]] || fail "a released claim reads as none"
+# A claimed menu bar with a dead owner is a stale claim, and the reader — not
+# this script — is what must survive it; prove the pid is written verbatim so
+# the reader has something to probe.
+env "${host_env[@]}" "$HOST" claim 999999
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["pid"]==999999' "$CLAIM" \
+  || fail "the claim records the pid the reader has to check"
+env "${host_env[@]}" "$HOST" release
+
+# BroBar is the item that survives, so it must claim, release, and carry what
+# Vox's item did: the live-mic glyph, its tooltip, and the click that ends a turn.
+BAR="$ROOT/macos/BroBar.swift"
+grep -q 'StatusHostClaim.claim()' "$BAR" || fail "BroBar does not claim the menu bar at launch"
+grep -q 'func applicationWillTerminate' "$BAR" || fail "BroBar never releases its claim"
+grep -q 'vox.send("end_turn")' "$BAR" \
+  || fail "a left-click with the mic live no longer ends the Vox turn"
+grep -q 'Mic is LIVE — click to stop listening.' "$BAR" \
+  || fail "Vox's live-mic tooltip was lost"
+grep -q 'mic.fill' "$BAR" || fail "the red live-mic glyph was lost"
+grep -q 'waveform.badge.mic' "$BAR" || fail "the speak-and-listen (barge-in) glyph was lost"
+grep -q 'showVoiceMenu' "$BAR" || fail "the voice controls have no way to be opened"
+grep -q "Show Vox's own menu bar icon" "$BAR" \
+  || fail "hiding Vox's icon must be reversible from bro's menu"
+
+# Vox's half of the handoff, when this machine has the vox-mcp checkout.
+VOXSRC="${VOX_SRC:-$HOME/vox-mcp/macos/VoxStatus.swift}"
+if [[ -f "$VOXSRC" ]]; then
+  grep -q 'VOX_STATUS_HOST_FILE' "$VOXSRC" || fail "Vox does not read the claim file"
+  grep -q 'kill(pid_t(pid), 0)' "$VOXSRC" \
+    || fail "Vox honours a claim without checking the claimant is alive"
+  grep -q 'statusItem.isVisible = !statusItemHosted' "$VOXSRC" \
+    || fail "Vox does not hide its item for a live claimant"
+  grep -q 'VOX_STATUS_ITEM' "$VOXSRC" || fail "Vox has no opt-out for the handoff"
+else
+  echo "# note: vox-mcp checkout absent, skipped Vox's half of the handoff" >&2
+fi
+pass "one menu bar item: bro claims it by live pid, Vox hides its own, and bro shows everything Vox did"
