@@ -893,7 +893,12 @@ chmod +x "$TMP/bin/grok"
 PATH="$TMP/bin:$PATH" HOME="$SH_FAKEHOME" BRO_HOME="$SH_HOME" BRO_BACKEND=grok \
   BRO_RETRY_BASE=1 BRO_RETRY_CAP=2 "$ROOT/bin/bro-shell" >/dev/null 2>&1 &
 shell_pid=$!
-sleep 4
+for _ in $(seq 1 60); do
+  [[ "$(cat "$SH_HOME/state/status-backend-word" 2>/dev/null)" == down ]] \
+    && [[ "$(grep -c 'launch attempt' "$SH_HOME/logs/backend.log" 2>/dev/null || true)" -ge 2 ]] \
+    && break
+  sleep 0.1
+done
 kill "$shell_pid" 2>/dev/null || true
 wait "$shell_pid" 2>/dev/null || true
 attempts="$(grep -c 'launch attempt' "$SH_HOME/logs/backend.log" || true)"
@@ -1232,3 +1237,35 @@ grep -q 'role=debrief' "$mprompt" || fail "the boot prompt does not explain the 
 grep -q 'bro-remind add' "$mprompt" || fail "the boot prompt does not teach bro-remind"
 grep -q 'Never invent nudges' "$mprompt" || fail "the boot prompt does not forbid inventing nudges"
 pass "bro remind/brief/debrief work from the front door and the boot prompt owns the contract"
+
+# Deeper Vox integration: the bar follows speaking over nudge and settles back
+# to nudge when the voice goes quiet, and the boot prompt turns heard speech
+# into memory with attribution.
+printf 'nudge\n' >"$ST_HOME/state/status-backend-word"
+cat >"$TMP/vox/state/state.json" <<'EOF'
+{"state":"speaking","microphone_open":false}
+EOF
+PATH="$TMP/bin:$PATH" BRO_HOME="$ST_HOME" VOX_STATE="$TMP/vox/state/state.json" \
+  BRO_STATUS_INTERVAL=0.05 "$ST_HOME/bin/bro-status-loop" &
+vox_pid=$!
+for _ in $(seq 1 20); do
+  [[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == speaking ]] && break
+  sleep 0.1
+done
+[[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == speaking ]] \
+  || fail "speaking did not win over a waiting nudge"
+cat >"$TMP/vox/state/state.json" <<'EOF'
+{"state":"idle","microphone_open":false}
+EOF
+for _ in $(seq 1 20); do
+  [[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == nudge ]] && break
+  sleep 0.1
+done
+kill "$vox_pid" 2>/dev/null || true
+wait "$vox_pid" 2>/dev/null || true
+[[ "$(cat "$ST_HOME/state/status-word" 2>/dev/null)" == nudge ]] \
+  || fail "the bar did not settle back to nudge after speaking ended"
+grep -q 'bro remember' "$mprompt" || fail "the boot prompt does not catch voice 'bro remember'"
+grep -q 'ATTRIBUTION' "$mprompt" || fail "the boot prompt does not attribute remembered speech"
+grep -q 'boss said' "$mprompt" || fail "the boot prompt has no attribution example"
+pass "speaking wins over nudge and settles back, and heard speech becomes attributed memory"

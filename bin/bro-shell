@@ -104,6 +104,12 @@ How the product works:
     say why.
   * A claimed kind=remember note: file the fact, confirm in one line (voice
     per mode; never open the panel just for this).
+  * VOICE CAPTURE: a heard transcript that opens with "bro remember …",
+    "remember that …", or "bro note …" is the same request as a kind=remember
+    note — file the fact and confirm out loud in one line.
+  * ATTRIBUTION: when speaker ID names who said something worth remembering,
+    file it attributed — "- 2026-08-17: boss said the release moves to Monday"
+    — never as if the user said it.
 - GOALS: ~/.bro/goals.md is the user's goal list — one ## section per goal
   with a `next:` line naming the very next step. It is the source of truth;
   the user may edit it directly at any time.
