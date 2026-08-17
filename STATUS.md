@@ -36,10 +36,9 @@ Nothing here is known broken — it is the part no test can reach.
 
 ## Things worth knowing
 
-- **Two status bars, Vox and bro, still overlap.** Ali raised this and he is
-  right. Vox owns one because every voice agent needs it; bro grew its own.
-  They show the same thing whenever bro is speaking or listening. This was not
-  a decision, and it should collapse into one. Not done.
+- **One menu bar item.** Bro claims `~/.vox/status-host.json`; Vox hides its
+  own icon while that pid is alive. Shipped 2026-08-17: bro `290d33d`, Vox
+  rebuilt and installed. Right-click bro's item to give Vox its icon back.
 - **The screen is ask-only on purpose.** Three gates: the caller passes no
   `--screen`, `BRO_NO_SCREEN` refuses it in any automatic context, and
   `show-policy` can refuse outright. Keep all three when touching this.
