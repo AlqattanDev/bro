@@ -89,6 +89,13 @@ struct VoxSnapshot: Equatable {
 final class VoxLink {
     private(set) var snapshot = VoxSnapshot()
     private var inFlight = false
+    /// The live audio envelope, 0…1: the mic's loudness while it's open, the
+    /// TTS clip's loudness while bro talks. Deliberately NOT part of VoxSnapshot
+    /// — it changes many times a second, and folding it into the Equatable
+    /// render state would repaint the whole item on every twitch. The waveform
+    /// reads it straight instead.
+    private(set) var level: CGFloat = 0
+    private var levelInFlight = false
     private let baseURL: URL = {
         let env = ProcessInfo.processInfo.environment
         if let override = env["VOX_URL"], let url = URL(string: override) { return url }
@@ -136,6 +143,33 @@ final class VoxLink {
                 next.notesWaiting = (payload["notes_waiting"] as? [String]) ?? []
                 self.snapshot = next
                 completion()
+            }
+        }.resume()
+    }
+
+    /// A cheap, frequent read of just the audio level, so the waveform can move
+    /// with the voice between the slower 0.5s health polls. Its own in-flight
+    /// guard keeps it independent of poll(); mic loudness wins while the mic is
+    /// open, TTS loudness while bro speaks, and it decays to zero otherwise.
+    func pollLevel() {
+        guard !levelInFlight else { return }
+        levelInFlight = true
+        var request = URLRequest(url: baseURL.appendingPathComponent("health"))
+        request.timeoutInterval = 0.6
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.levelInFlight = false
+                guard
+                    let data,
+                    let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else { self.level = 0; return }
+                let mic = (payload["mic_level"] as? Double) ?? 0
+                let tts = (payload["tts_level"] as? Double) ?? 0
+                let micOpen = (payload["microphone_open"] as? Bool) ?? false
+                // The mic is the meter while it's live; otherwise it's whatever
+                // bro is playing. Clamp to 0…1 — the envelope is already there.
+                self.level = CGFloat(max(0, min(1, micOpen ? mic : max(mic, tts))))
             }
         }.resume()
     }
@@ -294,8 +328,11 @@ func readWord(_ primary: URL, legacy: URL, fallback: String) -> String {
 func color(for word: String) -> NSColor {
     switch word {
     case "starting", "working": return NSColor(hex: 0xe5c07b)
-    case "speaking": return NSColor(hex: 0xc678dd)
-    case "listening": return NSColor(hex: 0x61afef)
+    // bro talking = green, your turn = red. No blue in between: the old
+    // "listening" blue was the confusing half-second between bro stopping and
+    // the mic opening. Both talking-to-you states are now one family per side.
+    case "speaking": return NSColor(hex: 0x2ecc71)
+    case "listening": return NSColor(hex: 0xff5f56)
     case "down": return NSColor(hex: 0xe06c75)
     case "nudge": return NSColor(hex: 0xd19a66)
     case "ready": return NSColor(hex: 0x7dcea0)
@@ -335,6 +372,7 @@ final class BroBar: NSObject, NSApplicationDelegate {
     /// don't run fifteen times a second.
     private var animTimer: Timer?
     private var animPhase: CGFloat = 0
+    private var animFrame = 0
     /// The floating answer panel (macos/BroPanel.swift) lives in this same
     /// process: one binary, one pidfile, one thing for bin/bro to supervise.
     private let panel = BroPanel()
@@ -385,25 +423,84 @@ final class BroBar: NSObject, NSApplicationDelegate {
         self.animTimer = anim
     }
 
-    /// The states that breathe: something is actively happening. Everything else
+    /// The states that move: something is actively happening. Everything else
     /// holds still — a menu bar that never stops moving is noise, not signal.
     private func animatedState(word: String, vox: VoxSnapshot) -> Bool {
         if vox.micOpen || vox.bargeIn { return true }
         return word == "speaking" || word == "listening" || word == "working"
     }
 
-    /// Repaint the current glyph at a breathing alpha. No file reads, no state
-    /// compare — just the icon, so it stays cheap at 15fps.
+    /// A voice state — bro talking or your mic live — which the waveform meters.
+    /// "working" is animated but has no audio, so it breathes instead.
+    private func meterState(word: String, vox: VoxSnapshot) -> Bool {
+        vox.micOpen || vox.bargeIn || word == "speaking" || word == "listening"
+    }
+
+    /// Green while bro talks, red while you record. The one distinction the icon
+    /// has to carry, so it never depends on which shape drew.
+    private func meterTint(word: String, vox: VoxSnapshot) -> NSColor {
+        if vox.micOpen || vox.bargeIn { return .systemRed }
+        if word == "listening" { return NSColor(hex: 0xff5f56) }
+        return NSColor(hex: 0x2ecc71)
+    }
+
+    /// Repaint the moving icon at ~15fps. No file reads here — a voice state
+    /// draws the level-driven waveform (polling the level ~5fps between the
+    /// slower health polls); "working" just breathes.
     private func animateTick() {
         guard let r = rendered, let button = statusItem.button,
               animatedState(word: r.word, vox: r.vox) else { return }
         animPhase += 1.0 / 15.0
-        // Alpha rides a sine from ~0.45 to 1.0; a working backend breathes a
-        // touch slower than a live voice, so the two read differently at a glance.
-        let cycle: CGFloat = r.word == "working" ? 1.1 : 0.85
-        let s = (sin(animPhase * 2 * .pi / cycle) + 1) / 2
-        button.image = statusGlyph(word: r.word, mode: r.mode, vox: r.vox,
-                                   alpha: 0.45 + 0.55 * s)
+        animFrame += 1
+        if meterState(word: r.word, vox: r.vox) {
+            if animFrame % 3 == 0 { vox.pollLevel() }
+            button.image = waveformImage(tint: meterTint(word: r.word, vox: r.vox))
+        } else {
+            let s = (sin(animPhase * 2 * .pi / 1.1) + 1) / 2
+            button.image = statusGlyph(word: r.word, mode: r.mode, vox: r.vox,
+                                       alpha: 0.45 + 0.55 * s)
+        }
+    }
+
+    /// A Dynamic-Island-style pill: a near-black capsule with seven coloured
+    /// bars riding the live audio envelope inside it. An idle shimmer keeps
+    /// them alive in near-silence; the voice level swells them. Vox's HUD
+    /// meter, shrunk into the menu bar and given a black backdrop so the bars pop.
+    private func waveformImage(tint: NSColor) -> NSImage {
+        let bars = 7
+        // Fill the menu bar's real height instead of a fixed short strip, with a
+        // hair of margin so the capsule never clips against the bar edges.
+        let h = max(16, NSStatusBar.system.thickness - 2)
+        let w: CGFloat = 42
+        let img = NSImage(size: NSSize(width: w, height: h))
+        img.lockFocus()
+        // The capsule. Near-black rather than pure, so it reads as an object on
+        // a light menu bar and still frames the bars on a dark one.
+        NSColor.black.withAlphaComponent(0.9).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: w, height: h),
+                     xRadius: h / 2, yRadius: h / 2).fill()
+
+        let barW: CGFloat = 2.4
+        let inset = h / 2                       // keep bars clear of the rounded ends
+        let span = w - inset * 2
+        let gap = (span - CGFloat(bars) * barW) / CGFloat(bars - 1)
+        let maxH = h - 4                         // bars run nearly the pill's full height
+        let lvl = vox.level
+        for i in 0..<bars {
+            let offset = CGFloat(i) * 0.8
+            let wob = (sin(animPhase * 2 * .pi / 0.4 + offset) + 1) / 2
+            let idle: CGFloat = 0.16 + 0.12 * wob
+            let voice: CGFloat = 0.75 * lvl * (0.35 + 0.65 * wob)
+            let frac = max(0.14, min(1, idle + voice))
+            let barH = maxH * frac
+            let x = inset + CGFloat(i) * (barW + gap)
+            let rect = NSRect(x: x, y: (h - barH) / 2, width: barW, height: barH)
+            tint.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: barW / 2, yRadius: barW / 2).fill()
+        }
+        img.unlockFocus()
+        img.isTemplate = false
+        return img
     }
 
     private func refresh() {
@@ -485,6 +582,11 @@ final class BroBar: NSObject, NSApplicationDelegate {
     /// through when bro is otherwise ready — a warning must not mask working
     /// or down; the tooltip carries the rest.
     private func statusGlyph(word: String, mode: String, vox: VoxSnapshot, alpha: CGFloat = 1.0) -> NSImage? {
+        // A voice state is the waveform, not a symbol — so a state change paints
+        // it at once and animateTick just keeps it moving.
+        if meterState(word: word, vox: vox) {
+            return waveformImage(tint: meterTint(word: word, vox: vox))
+        }
         var symbol: String
         var tint = color(for: word)
         var size: CGFloat = 13
@@ -497,7 +599,7 @@ final class BroBar: NSObject, NSApplicationDelegate {
             switch word {
             case "starting": symbol = "circle.dotted"
             case "working": symbol = "gearshape.fill"
-            case "speaking": symbol = "speaker.wave.2.fill"
+            case "speaking": symbol = "waveform"
             case "listening": symbol = "waveform"
             case "down": symbol = "xmark.octagon.fill"
             case "nudge": symbol = "bell.fill"
