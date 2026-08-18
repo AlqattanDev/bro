@@ -13,7 +13,7 @@ echo
 
 # --- prerequisites -----------------------------------------------------------
 missing=0
-for tool in tmux git swiftc; do
+for tool in tmux git swiftc uv; do
   if command -v "$tool" >/dev/null 2>&1; then
     echo "✓ $tool"
   else
@@ -27,10 +27,17 @@ if [[ "$missing" -ne 0 ]]; then
   exit 1
 fi
 
+# --- voice runtime venv ------------------------------------------------------
+# Since the fuse, the voice runtime (vox) lives in-tree at vox/. Its Python
+# daemon runs from vox/.venv; uv sync builds it deterministically from uv.lock.
+echo
+echo "setting up the voice runtime (vox/.venv)…"
+( cd "$BRO_HOME/vox" && uv sync --frozen )
+
 # --- build -------------------------------------------------------------------
 echo
-echo "building BroBar…"
-"$BRO_HOME/bin/build-bro-bar"
+echo "building BroBar + Vox.app…"
+"$BRO_HOME/bin/build"
 
 # --- PATH --------------------------------------------------------------------
 echo

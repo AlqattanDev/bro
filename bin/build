@@ -1,0 +1,29 @@
+#!/bin/zsh
+# Build both faces of bro in one shot:
+#   - BroBar.app   — the menu-bar face, answer panel, and summon hotkeys
+#   - Vox.app      — the voice runtime's status app (VoxStatus + the HUD sphere)
+#
+# Since the fuse, vox lives at vox/ inside this repo, so one command owns the
+# whole visible surface. Both apps are signed with the same stable identity
+# ("Vox Local Signing"): macOS pins TCC grants (Microphone, Accessibility) to
+# the signature, so a single shared identity is what keeps those grants alive
+# across rebuilds instead of silently dropping them.
+#
+# This builds into each app's dist/ only. It does NOT reinstall the running
+# ~/Applications/Vox.app — recompiling changes the cdhash and would force the
+# mic/accessibility grants to be re-approved, so reinstalling stays a separate,
+# deliberate step.
+set -euo pipefail
+
+ROOT="${0:A:h:h}"
+IDENTITY="${BRO_SIGN_IDENTITY:-Vox Local Signing}"
+
+echo "== building BroBar =="
+BRO_SIGN_IDENTITY="$IDENTITY" "$ROOT/bin/build-bro-bar"
+
+echo
+echo "== building Vox.app (voice runtime status app) =="
+VOX_CODESIGN_IDENTITY="$IDENTITY" "$ROOT/vox/scripts/build_macos_app.sh"
+
+echo
+echo "both apps built under their dist/ — reinstall Vox.app deliberately if needed."
