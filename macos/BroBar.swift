@@ -328,6 +328,13 @@ extension NSColor {
 final class BroBar: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
+    /// A second, faster tick that only breathes the icon. render() repaints on
+    /// state *change*; this repaints the same state at ~15fps so an active
+    /// moment — a live mic, a voice talking, a backend working — pulses instead
+    /// of sitting dead. Kept apart from the 0.5s poll so the file reads there
+    /// don't run fifteen times a second.
+    private var animTimer: Timer?
+    private var animPhase: CGFloat = 0
     /// The floating answer panel (macos/BroPanel.swift) lives in this same
     /// process: one binary, one pidfile, one thing for bin/bro to supervise.
     private let panel = BroPanel()
@@ -372,6 +379,31 @@ final class BroBar: NSObject, NSApplicationDelegate {
         // .common keeps polling alive while a menu-tracking loop is running.
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+
+        let anim = Timer(timeInterval: 1.0 / 15.0, repeats: true) { [weak self] _ in self?.animateTick() }
+        RunLoop.main.add(anim, forMode: .common)
+        self.animTimer = anim
+    }
+
+    /// The states that breathe: something is actively happening. Everything else
+    /// holds still — a menu bar that never stops moving is noise, not signal.
+    private func animatedState(word: String, vox: VoxSnapshot) -> Bool {
+        if vox.micOpen || vox.bargeIn { return true }
+        return word == "speaking" || word == "listening" || word == "working"
+    }
+
+    /// Repaint the current glyph at a breathing alpha. No file reads, no state
+    /// compare — just the icon, so it stays cheap at 15fps.
+    private func animateTick() {
+        guard let r = rendered, let button = statusItem.button,
+              animatedState(word: r.word, vox: r.vox) else { return }
+        animPhase += 1.0 / 15.0
+        // Alpha rides a sine from ~0.45 to 1.0; a working backend breathes a
+        // touch slower than a live voice, so the two read differently at a glance.
+        let cycle: CGFloat = r.word == "working" ? 1.1 : 0.85
+        let s = (sin(animPhase * 2 * .pi / cycle) + 1) / 2
+        button.image = statusGlyph(word: r.word, mode: r.mode, vox: r.vox,
+                                   alpha: 0.45 + 0.55 * s)
     }
 
     private func refresh() {
@@ -452,7 +484,7 @@ final class BroBar: NSObject, NSApplicationDelegate {
     /// state reads at a glance without any text. A Vox that died only shows
     /// through when bro is otherwise ready — a warning must not mask working
     /// or down; the tooltip carries the rest.
-    private func statusGlyph(word: String, mode: String, vox: VoxSnapshot) -> NSImage? {
+    private func statusGlyph(word: String, mode: String, vox: VoxSnapshot, alpha: CGFloat = 1.0) -> NSImage? {
         var symbol: String
         var tint = color(for: word)
         var size: CGFloat = 13
@@ -482,7 +514,7 @@ final class BroBar: NSObject, NSApplicationDelegate {
             }
         }
         let config = NSImage.SymbolConfiguration(pointSize: size, weight: .semibold)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [tint]))
+            .applying(NSImage.SymbolConfiguration(paletteColors: [tint.withAlphaComponent(alpha)]))
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: word)?
             .withSymbolConfiguration(config)
         image?.isTemplate = false
