@@ -111,9 +111,22 @@ migrate_state() {
 }
 
 start_status_loop() {
-  local pidfile="$STATE/status-loop.pid"
-  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-    return 0
+  local pidfile="$STATE/status-loop.pid" frame="$STATE/status-frame"
+  local pid now age
+  if [[ -f "$pidfile" ]] && pid="$(cat "$pidfile" 2>/dev/null)" \
+       && [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    # The pid is alive — but a wedged loop is alive too, and a bare kill -0 is
+    # exactly what let the bar freeze on "listening" for 13 minutes while the
+    # daemon happily re-decided "already running, nothing to do". bro-status-loop
+    # rewrites status-frame every BRO_STATUS_INTERVAL (~0.25s), so a frame that
+    # has not moved in BRO_STATUS_STALE_S is a hang: reap it and start fresh.
+    now="$(date +%s)"
+    age=$(( now - $(stat -f %m "$frame" 2>/dev/null || echo "$now") ))
+    if (( age <= ${BRO_STATUS_STALE_S:-6} )); then
+      return 0
+    fi
+    kill "$pid" 2>/dev/null || true
+    pkill -P "$pid" 2>/dev/null || true
   fi
   nohup "$BRO_HOME/bin/bro-status-loop" >>"$BRO_HOME/logs/status.log" 2>&1 &
   echo $! >"$pidfile"
