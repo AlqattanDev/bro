@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Environments
+.venv/
+
+# Build output — dist/Vox.app is compiled from macos/VoxStatus.swift
+# via scripts/build_macos_app.sh and force-included into the wheel.
+dist/
+build/
+
+# Local tool config (per-machine MCP pointers)
+.codex/
+
+# Scratch
+work/
+work-test-home/
+.DS_Store
