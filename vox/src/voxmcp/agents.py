@@ -11,10 +11,22 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Sequence
 
 from .lease import DEFAULT_AGENT
+
+# A real Kokoro voice id is a short language prefix, an underscore, then
+# lowercase word characters — "af_nicole", "jf_nezumi", "af_v0". Anything else
+# (a stray dict repr like "{'id': 'af_nicole'}", an object, a sentence) is
+# gibberish that would reach the synthesiser and fail, so it never becomes a
+# voice: the agent falls back to a real one instead.
+_VOICE_ID = re.compile(r"^[a-z]{1,3}_[a-z0-9]+(?:_[a-z0-9]+)*$")
+
+
+def _is_plausible_voice(voice: str) -> bool:
+    return bool(_VOICE_ID.match(voice.strip().lower()))
 
 # Used only when the local Kokoro service cannot be reached for its real list.
 FALLBACK_VOICES: tuple[str, ...] = (
@@ -62,9 +74,11 @@ class AgentVoices:
         if not isinstance(document, dict):
             return {}
         return {
-            str(agent): str(voice)
+            str(agent): voice.strip().lower()
             for agent, voice in document.items()
-            if isinstance(agent, str) and isinstance(voice, str) and voice.strip()
+            if isinstance(agent, str)
+            and isinstance(voice, str)
+            and _is_plausible_voice(voice)
         }
 
     def _save(self) -> None:
