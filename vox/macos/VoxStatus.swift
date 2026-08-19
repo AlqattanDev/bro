@@ -315,9 +315,22 @@ final class VoxAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var voiceKeyHoldTimer: DispatchWorkItem?
     private var voiceKeyBecameHold = false
     private let hud = VoxHUD()
+    /// A single env flag, parsed the same way everywhere.
+    private static func envFlag(_ name: String, _ fallback: String = "0") -> Bool {
+        ["1", "true", "yes"].contains(
+            (ProcessInfo.processInfo.environment[name] ?? fallback).lowercased())
+    }
+    /// Headless is the one seam that turns Vox into a faceless voice organ: read
+    /// once at launch, it suppresses *every* visible identity — the status item,
+    /// the HUD and the panel — while the runtime it supervises, the hotkeys and
+    /// the polling all keep running. Default off, so a standalone Vox elsewhere
+    /// is untouched; the bro machine opts in with `VOX_HEADLESS=1` in the runtime
+    /// plist. This is what makes "bro is the only face" true by construction
+    /// rather than by a live-claim truce.
+    private let headless = VoxAppDelegate.envFlag("VOX_HEADLESS")
     private let hudEnabled =
-        (ProcessInfo.processInfo.environment["VOX_HUD"] ?? "1").lowercased()
-        != "0"
+        !VoxAppDelegate.envFlag("VOX_HEADLESS")
+        && (ProcessInfo.processInfo.environment["VOX_HUD"] ?? "1").lowercased() != "0"
     private var gateOpen = false
     private var streamOpen = false
     private var dictating = false
@@ -352,11 +365,17 @@ final class VoxAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         configurePanel()
-        guard let button = statusItem.button else { return }
-        button.target = self
-        button.action = #selector(statusItemClicked)
-        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        button.toolTip = "Vox — click to stop listening when the mic is live; right-click for controls"
+        // Headless: no face at all. Hide the status item and never wire its
+        // button — but fall through to the runtime, hotkeys and polling below so
+        // Vox stays a working voice organ that bro speaks through.
+        if headless {
+            statusItem.isVisible = false
+        } else if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(statusItemClicked)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.toolTip = "Vox — click to stop listening when the mic is live; right-click for controls"
+        }
         // Re-bake the glyph colour whenever the system switches light/dark, read
         // from the authoritative AppleInterfaceStyle change broadcast (the app's
         // own effectiveAppearance is unreliable for an accessory app on Tahoe).
@@ -884,6 +903,11 @@ final class VoxAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// item is hidden — the tooltip, the glyph and the panel are all rebuilt as
     /// usual, so the moment the claim lapses the item comes back already correct.
     private func updateStatusItemVisibility() {
+        // Headless never shows, whatever the claim or handoff setting says.
+        if headless {
+            if statusItem.isVisible { statusItem.isVisible = false }
+            return
+        }
         guard statusItemHandoffAllowed else {
             if !statusItem.isVisible { statusItem.isVisible = true }
             return

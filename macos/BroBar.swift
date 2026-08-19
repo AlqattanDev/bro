@@ -384,9 +384,6 @@ final class BroBar: NSObject, NSApplicationDelegate {
     private var hotKeyRefs: [EventHotKeyRef] = []
     /// The voice service, polled on the same timer as the status files.
     private let vox = VoxLink()
-    /// Whether Vox's own status item is currently hidden in favour of this one.
-    /// Flipped from the menu, so the full Vox panel is always one click away.
-    private var claimingStatusBar = false
     /// Last rendered state. The status item is only touched when this changes,
     /// so the common case — nothing happening — costs a few small file reads.
     private struct Rendered: Equatable {
@@ -410,8 +407,10 @@ final class BroBar: NSObject, NSApplicationDelegate {
         panel.controls = self
         panel.start()
         registerHotKeys()
-        // One icon in the menu bar: from here on Vox draws none.
-        claimingStatusBar = StatusHostClaim.claim()
+        // One icon in the menu bar: from here on Vox draws none. The claim is a
+        // harmless safety net now that Vox runs headless — it still hides Vox's
+        // item on any machine where VOX_HEADLESS is off.
+        _ = StatusHostClaim.claim()
 
         refresh()
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in self?.refresh() }
@@ -806,14 +805,9 @@ final class BroBar: NSObject, NSApplicationDelegate {
         }
 
         menu.addItem(NSMenuItem.separator())
-        // The escape hatch that makes hiding Vox's icon safe rather than final:
-        // Vox's own item — and with it its panel, its restart control and
-        // anything bro has not mirrored — is one click away, and comes back
-        // within a second because the claim file is simply gone.
-        menu.addItem(item(
-            claimingStatusBar ? "Show Vox's own menu bar icon" : "Hide Vox's menu bar icon (bro shows it)",
-            #selector(toggleStatusClaim)
-        ))
+        // No "show Vox's icon" escape hatch: Vox runs headless (VOX_HEADLESS=1)
+        // and has no face of its own to summon. Bro is the only face, by
+        // construction. See vox/macos/VoxStatus.swift's `headless` seam.
         menu.addItem(item("Open the Vox folder", #selector(openVoxFolder)))
 
         target(menu)
@@ -847,12 +841,6 @@ final class BroBar: NSObject, NSApplicationDelegate {
     @objc private func voiceSetMode(_ sender: NSMenuItem) {
         guard let mode = sender.representedObject as? String else { return }
         vox.send("set_mode", extra: ["mode": mode])
-    }
-
-    @objc private func toggleStatusClaim() {
-        claimingStatusBar = claimingStatusBar
-            ? !StatusHostClaim.release()
-            : StatusHostClaim.claim()
     }
 
     @objc private func openVoxFolder() {

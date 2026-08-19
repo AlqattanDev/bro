@@ -853,8 +853,9 @@ grep -q 'Mic is LIVE — click to stop listening.' "$BAR" \
 grep -q 'mic.fill' "$BAR" || fail "the red live-mic glyph was lost"
 grep -q 'waveform.badge.mic' "$BAR" || fail "the speak-and-listen (barge-in) glyph was lost"
 grep -q 'panelMoreMenu' "$BAR" || fail "the voice controls have no way to be opened"
-grep -q "Show Vox's own menu bar icon" "$BAR" \
-  || fail "hiding Vox's icon must be reversible from bro's menu"
+if grep -q "Show Vox's own menu bar icon" "$BAR"; then
+  fail "bro must not offer a second Vox face: Vox runs headless, bro is the only face"
+fi
 grep -q 'panel.toggle()' "$BAR" || fail "a menu-bar click no longer opens the panel"
 grep -q 'bundleIdentifier == "com.bro.brobar"' "$ROOT/macos/main.swift" \
   || fail "BroBar does not refuse to launch a second copy"
@@ -863,19 +864,23 @@ grep -q 'controls?.panelTalk()' "$ROOT/macos/BroPanel.swift" \
 grep -q 'BroSummon.run(\["voice"\])' "$BAR" \
   || fail "the Talk path no longer reaches bin/bro-talk"
 
-# Vox's half of the handoff, when this machine has the vox-mcp checkout.
-VOXSRC="${VOX_SRC:-$HOME/vox-mcp/macos/VoxStatus.swift}"
+# Vox's half of the fusion: since the fuse Vox lives in-repo and, on the bro
+# machine, runs headless — no face of its own, ever, by construction — while the
+# claim-file mechanism stays as a safety net for any machine where VOX_HEADLESS
+# is off.
+VOXSRC="${VOX_SRC:-$ROOT/vox/macos/VoxStatus.swift}"
 if [[ -f "$VOXSRC" ]]; then
+  grep -q 'private let headless' "$VOXSRC" || fail "Vox has no single headless seam"
+  grep -q 'VOX_HEADLESS' "$VOXSRC" || fail "Vox headless is not driven by VOX_HEADLESS"
   grep -q 'VOX_STATUS_HOST_FILE' "$VOXSRC" || fail "Vox does not read the claim file"
   grep -q 'kill(pid_t(pid), 0)' "$VOXSRC" \
     || fail "Vox honours a claim without checking the claimant is alive"
   grep -q 'statusItem.isVisible = !statusItemHosted' "$VOXSRC" \
     || fail "Vox does not hide its item for a live claimant"
-  grep -q 'VOX_STATUS_ITEM' "$VOXSRC" || fail "Vox has no opt-out for the handoff"
 else
-  echo "# note: vox-mcp checkout absent, skipped Vox's half of the handoff" >&2
+  echo "# note: in-repo Vox source absent, skipped Vox's half of the fusion" >&2
 fi
-pass "one menu bar item: bro claims it by live pid, Vox hides its own, and bro shows everything Vox did"
+pass "one menu bar item: Vox runs headless, bro is the only face and shows everything Vox did"
 
 # bro-verify: the keyboard checklist records pass/fail/skip honestly, latest
 # answer wins, a fail exits non-zero, and a passed item is never re-asked.
