@@ -334,6 +334,7 @@ func color(for word: String) -> NSColor {
     case "speaking": return NSColor(hex: 0x2ecc71)
     case "listening": return NSColor(hex: 0xff5f56)
     case "down": return NSColor(hex: 0xe06c75)
+    case "login": return NSColor(hex: 0xe39b3b)
     case "nudge": return NSColor(hex: 0xd19a66)
     case "ready": return NSColor(hex: 0x7dcea0)
     default: return NSColor(hex: 0xaaaaaa)
@@ -602,6 +603,7 @@ final class BroBar: NSObject, NSApplicationDelegate {
             case "speaking": symbol = "waveform"
             case "listening": symbol = "waveform"
             case "down": symbol = "xmark.octagon.fill"
+            case "login": symbol = "lock.fill"
             case "nudge": symbol = "bell.fill"
             default:
                 // ready — and the only moment quiet enough to surface trouble
@@ -639,6 +641,8 @@ final class BroBar: NSObject, NSApplicationDelegate {
             head = cause.isEmpty
                 ? "bro — backend is down. Run: bro doctor."
                 : "bro — backend is down: \(cause)"
+        } else if word == "login" {
+            head = "bro — Grok's login expired. Run: bro (then /login in the me window)."
         } else if word == "working", depth > 1 {
             head = "bro — working, \(depth) asks queued."
         } else {

@@ -315,6 +315,46 @@ kill -0 "$d_bar_pid" 2>/dev/null && fail "bro stop stops BroBar"
 [[ ! -e "$DAEMON_HOME/state/bro-bar.pid" ]] || fail "bro stop clears the bar pidfile"
 pass "the daemon owns the backend, a terminal detaching leaves it up, and bro stop takes it down"
 
+# A live process is not a live brain: when Grok's login expires under a running
+# backend, the health probe must catch the auth banner in bro's OWN window and
+# flip the bar to "login" instead of leaving a green "ready" lying over a
+# backend that cannot answer — then hand the bar back once the banner clears.
+HEALTH_HOME="$TMP/health-home"
+mkdir -p "$HEALTH_HOME/bin" "$HEALTH_HOME/state"
+cp "$ROOT/bin/bro" "$ROOT/bin/bro-status" "$ROOT/bin/bro-status-paint" "$HEALTH_HOME/bin/"
+# A tmux that answers has-session and prints whatever the "me" pane currently
+# shows, read from a file the test rewrites between probes.
+cat >"$TMP/bin/tmux" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  [[ "$a" == "has-session" ]] && exit 0
+  [[ "$a" == "capture-pane" ]] && { cat "${FAKE_PANE_FILE:-/dev/null}" 2>/dev/null; exit 0; }
+done
+exit 0
+EOF
+chmod +x "$TMP/bin/tmux"
+health_env=(PATH="$TMP/bin:$PATH" BRO_HOME="$HEALTH_HOME" FAKE_PANE_FILE="$TMP/me-pane.txt")
+# Backend idle and healthy: a clean pane leaves the bar exactly as the backend set it.
+printf 'working\n' >"$HEALTH_HOME/state/status-word"
+printf 'working\n' >"$HEALTH_HOME/state/status-backend-word"
+printf '❯ ready to help\n' >"$TMP/me-pane.txt"
+env "${health_env[@]}" "$HEALTH_HOME/bin/bro" backend-health
+[[ "$(cat "$HEALTH_HOME/state/status-word")" == working ]] || fail "a healthy backend keeps its own status word"
+# The login banner appears: the probe flags it, no matter what the bar said before.
+printf 'Authentication required — your session has expired or your credentials\nwere rejected. Run /login to re-authenticate, then resend your message.\n' >"$TMP/me-pane.txt"
+env "${health_env[@]}" "$HEALTH_HOME/bin/bro" backend-health
+[[ "$(cat "$HEALTH_HOME/state/status-word")" == login ]] || fail "the auth banner flips the bar to login"
+[[ "$(cat "$HEALTH_HOME/state/status-backend-word")" == login ]] || fail "login is sticky: it becomes the backend's own word so the loop keeps it"
+# The banner clears (Ali re-logged in): the probe hands the bar back to ready.
+printf '❯ \n' >"$TMP/me-pane.txt"
+env "${health_env[@]}" "$HEALTH_HOME/bin/bro" backend-health
+[[ "$(cat "$HEALTH_HOME/state/status-word")" == ready ]] || fail "clearing the banner recovers the bar to ready"
+# The paint renders login in its own colour, not silently as the default word.
+BRO_HOME="$HEALTH_HOME" printf 'login\n' >"$HEALTH_HOME/state/status-word"
+BRO_HOME="$HEALTH_HOME" "$HEALTH_HOME/bin/bro-status-paint"
+grep -q 'login' "$HEALTH_HOME/state/status-line" || fail "bro-status-paint renders the login word"
+pass "the health probe catches an expired Grok login and clears it on recovery"
+
 QUEUE_HOME="$TMP/queue-home"
 mkdir -p "$QUEUE_HOME/bin"
 cp "$ROOT/bin/bro-inbox" "$ROOT/bin/bro-wake" "$QUEUE_HOME/bin/"
