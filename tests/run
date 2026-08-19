@@ -65,6 +65,26 @@ kill "$status_pid"
 wait "$status_pid" 2>/dev/null || true
 pass "status loop survives tmux absence and follows Vox through listening, speaking, and ready"
 
+# One source of truth for the bar word (#4). With Vox headless there is a single
+# face, and bro-status-loop is the single reconciler that owns status-word. A
+# direct `bro-status` write is only a fast-paint cache — it must feed the
+# reconciler, never orphan it: a backend word is mirrored into
+# status-backend-word so the loop settles back to it after a vox turn, while a
+# transient --hint owns the bar without clobbering the backend's real state.
+ST_HOME="$TMP/status-source-home"
+mkdir -p "$ST_HOME/bin" "$ST_HOME/state"
+cp "$ROOT/bin/bro-status" "$ROOT/bin/bro-status-paint" "$ST_HOME/bin/"
+BRO_HOME="$ST_HOME" "$ST_HOME/bin/bro-status" working
+[[ "$(cat "$ST_HOME/state/status-word")" == working ]] || fail "bro-status sets the word"
+[[ "$(cat "$ST_HOME/state/status-backend-word")" == working ]] \
+  || fail "bro-status must mirror the word into status-backend-word so the reconciler agrees"
+[[ "$(cat "$ST_HOME/state/status-owner")" == backend ]] || fail "a backend word owns the bar as backend"
+BRO_HOME="$ST_HOME" "$ST_HOME/bin/bro-status" listening --hint
+[[ "$(cat "$ST_HOME/state/status-owner")" == hint ]] || fail "a --hint word owns the bar as hint"
+[[ "$(cat "$ST_HOME/state/status-backend-word")" == working ]] \
+  || fail "a --hint must not clobber the backend's own state"
+pass "one source of truth: bro-status feeds the reconciler, never orphans or clobbers it"
+
 SUP_HOME="$TMP/supervise-home"
 mkdir -p "$SUP_HOME/bin" "$SUP_HOME/logs" "$SUP_HOME/watch"
 cp "$ROOT/bin/bro" "$SUP_HOME/bin/"
