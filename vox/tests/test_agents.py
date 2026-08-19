@@ -104,6 +104,29 @@ def test_more_agents_than_voices_still_resolves(tmp_path: Path):
     assert all(voice in pool for voice in resolved)
 
 
+def test_malformed_voice_value_never_reaches_the_synthesiser(tmp_path: Path):
+    """A dict repr written into agents.json (the bro-voice bug) is gibberish to
+    Kokoro. It must be dropped so the agent falls back to a real voice, not
+    handed a value with braces and quotes in it."""
+
+    path = tmp_path / "agents.json"
+    path.write_text('{"bro": "{\'id\': \'af_nicole\', \'name\': \'af_nicole\'}"}')
+    voices = AgentVoices(path, default_voice="af_sky")
+    resolved = voices.resolve("bro", POOL)
+    assert resolved in POOL
+    assert "{" not in resolved and "'" not in resolved
+
+
+def test_voice_values_are_normalised(tmp_path: Path):
+    """Case and stray whitespace in a hand-written mapping are tidied, so
+    '  JF_Nezumi ' resolves to the same voice as 'jf_nezumi'."""
+
+    path = tmp_path / "agents.json"
+    path.write_text('{"tokyo": "  JF_Nezumi  "}')
+    voices = AgentVoices(path, default_voice="af_sky")
+    assert voices.resolve("tokyo", REAL_POOL) == "jf_nezumi"
+
+
 def test_unreadable_map_falls_back_to_assignment(tmp_path: Path):
     path = tmp_path / "agents.json"
     path.write_text("{ this is not json")
