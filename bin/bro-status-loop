@@ -23,7 +23,7 @@ backend_word() {
   local w age now
   w="$(tr -d '[:space:]' 2>/dev/null <"$BACKEND_WORD" || true)"
   case "$w" in
-    working|down|nudge) echo "$w" ;;
+    working|down|nudge|login) echo "$w" ;;
     starting)
       now="$(date +%s)"
       age=$(( now - $(stat -f %m "$BACKEND_WORD" 2>/dev/null || echo 0) ))

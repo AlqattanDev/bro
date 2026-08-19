@@ -224,6 +224,38 @@ backend_up() {
   if ! "${TMUXC[@]}" has-session -t "$SESSION" 2>/dev/null; then
     create_session
   fi
+  # A live pid is not a live brain: Grok's login can expire under a running
+  # process, and then the bar would keep saying "ready" over a backend that
+  # cannot answer. The supervisor calls this every cycle so that lie is caught.
+  backend_health
+}
+
+backend_health() {
+  # Bro reading its OWN backend console (window :me) — never the user's work
+  # pane (:you) and never the screen. This is not the watch loop that was
+  # removed: that one photographed Ali on a timer; this only ever looks at
+  # Grok's own UI to answer one question the supervisor must answer — "can the
+  # brain still take a request at all?" When the answer is no, the bar has to
+  # say so instead of showing a green "ready".
+  "${TMUXC[@]}" has-session -t "$SESSION" 2>/dev/null || return 0
+  local pane word
+  pane="$("${TMUXC[@]}" capture-pane -t "$SESSION:me" -p 2>/dev/null || true)"
+  word="$(tr -d '[:space:]' 2>/dev/null <"$STATE/status-word" || echo ready)"
+  case "$pane" in
+    *"Authentication required"*|*"session has expired"*|*"/login to re-authenticate"*|*"Run /login"*)
+      # Sticky: bro-status writes both status-word and the backend's own word,
+      # so the loop keeps painting "login" until Grok is back and writes its
+      # own state. Idempotent — re-flagging an already-login bar is a no-op.
+      [[ "$word" == login ]] || "$BRO_HOME/bin/bro-status" login >/dev/null 2>&1 || true
+      ;;
+    *)
+      # Recovered: the banner is gone. If we were the ones holding the bar at
+      # "login", hand it back to ready so Grok's next real status write — which
+      # it makes as soon as it acts — takes over from a clean idle, not a stale
+      # warning. Any non-login word is Grok's to own; leave it untouched.
+      [[ "$word" == login ]] && "$BRO_HOME/bin/bro-status" ready >/dev/null 2>&1 || true
+      ;;
+  esac
 }
 
 create_session() {
@@ -259,6 +291,11 @@ case "$cmd" in
   backend-up)
     # Headless: bring the backend up, attach nothing. What the daemon calls.
     backend_up
+    ;;
+  backend-health)
+    # Just the health probe, no supervision. Handy to run by hand and what the
+    # tests drive directly.
+    backend_health
     ;;
   daemon)
     shift

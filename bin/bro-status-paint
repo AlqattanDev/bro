@@ -39,6 +39,8 @@ case "$word" in
     color='#61afef'; mark="$dot"; label='listening' ;;
   down)
     color='#e06c75'; mark=''; label='down' ;;
+  login)
+    color='#e39b3b'; mark=''; label='login' ;;
   nudge)
     color='#d19a66'; mark=''; label='nudge' ;;
   ready)
