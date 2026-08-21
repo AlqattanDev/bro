@@ -61,6 +61,17 @@ from .storage import AudioStore
 
 IO_MODES = ("talk", "narrate", "dictate")
 
+# Client ids that are the user acting directly (hotkeys, the phone remote,
+# the vox CLI typed in a terminal), as opposed to an MCP-connected agent
+# acting programmatically. Stop/cancel from these surfaces is the user's own
+# hand; from anything else it is not.
+_USER_SURFACES = frozenset({"http-control", "phone", "mcp:host:vox-cli"})
+
+# How long a silent participant stays on the roster. Refreshed by every
+# session call and every audio turn; long enough to survive a think, short
+# enough that a dead reconnect does not haunt the line as a phantom agent.
+_PARTICIPANT_TTL_SECONDS = 900.0
+
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?…])\s+")
 
 
@@ -256,11 +267,21 @@ class VoxEngine:
         self._barge_in_fired = False
         self._barge_in_loop: asyncio.AbstractEventLoop | None = None
         self._cancel_requested = False
+        # Who asked for the cancel and through which control, so the turn that
+        # dies can tell "the user hung up" apart from "a peer agent stopped the
+        # shared session". Cleared with _cancel_requested.
+        self._cancel_source: dict[str, Any] | None = None
         self._microphone_active = False
         self._microphone_closing = False
         self._pending_heard: dict[str, Any] | None = None
         self._pending_turn_id: str | None = None
         self._pending_agent: str | None = None
+        # One physical line, but each agent that starts gets its own session
+        # on it: own session_id, visible on the roster, ended by its own stop.
+        # Two agents once shared one anonymous session and neither could tell
+        # whose it was. Keyed by participant id (agent label, plus a short
+        # connection tag when two connections share a label).
+        self._participants: dict[str, dict[str, Any]] = {}
         # The agent whose voice last spoke, so a user-initiated "reply" can be
         # addressed back to it without an agent picker.
         self._last_spoken_agent: str | None = None
@@ -438,6 +459,7 @@ class VoxEngine:
             self._active_task = asyncio.current_task()
             self._active_client = client_id
             self._cancel_requested = False
+            self._cancel_source = None
 
     def _clear_active(self) -> None:
         with self._active_lock:
@@ -449,6 +471,7 @@ class VoxEngine:
             self._barge_in_future = None
             self._barge_in_fired = False
             self._cancel_requested = False
+            self._cancel_source = None
 
     def _load_io_mode(self) -> str:
         try:
@@ -494,6 +517,7 @@ class VoxEngine:
             raise PrivacyError("Voice session is paused; resume it before using audio")
         async with self.gate.operation(client_id, action, agent=agent or DEFAULT_AGENT):
             self._set_active(client_id)
+            self._touch_participants(agent)
             with self._active_lock:
                 self._pending_agent = agent or DEFAULT_AGENT
             try:
@@ -507,6 +531,7 @@ class VoxEngine:
                 # deliberate cancel apart from the host dropping the request.
                 with self._active_lock:
                     user_requested = self._cancel_requested
+                    cancel_source = self._cancel_source
                 pending_heard, turn_id = self._take_pending_heard()
                 self._signal_cancel(manual_end=False, cancel_task=False)
                 self._return_idle_if_active()
@@ -542,6 +567,9 @@ class VoxEngine:
                     return {
                         "status": "cancelled",
                         "action": action,
+                        "cancelled_by": cancel_source
+                        or {"client_id": None, "cause": None},
+                        "detail": self._cancel_detail(cancel_source),
                         "session": self.state.snapshot().to_dict(),
                         "undelivered_heard": (
                             self.last_heard.undelivered().public()
@@ -627,12 +655,39 @@ class VoxEngine:
         control.deliver_text(value)
         return {"status": "delivered", "delivered": True, "chars": len(value)}
 
+    @staticmethod
+    def _cancel_detail(source: dict[str, Any] | None) -> str:
+        """One honest sentence about who ended the turn.
+
+        Two agents once shared this line; one stopped the session to clear a
+        "stuck" mic and the other's cancelled turn read as the user hanging
+        up. The payload has to say which control fired so nobody guesses.
+        """
+
+        by = source.get("client_id") if source else None
+        cause = source.get("cause") if source else None
+        if by in _USER_SURFACES:
+            return f"the user cancelled this turn ({cause or 'local control'})"
+        if by is not None:
+            return (
+                f"{cause or 'a cancel'} from client '{by}' ended this turn — "
+                "an agent-side action, not the user hanging up. The user did "
+                "not end voice; check voice_session status before concluding "
+                "the session is over."
+            )
+        return (
+            "this turn was cancelled by the voice runtime; the user did not "
+            "necessarily end the session"
+        )
+
     def _signal_cancel(
         self,
         *,
         manual_end: bool,
         cancel_task: bool = True,
         force: bool = False,
+        requested_by: str | None = None,
+        cause: str | None = None,
     ) -> dict[str, Any]:
         with self._active_lock:
             task = self._active_task
@@ -679,6 +734,13 @@ class VoxEngine:
         if signalled and not manual_end:
             with self._active_lock:
                 self._cancel_requested = True
+                # First attribution wins: a stop's own cleanup passes must not
+                # overwrite who actually pulled the plug.
+                if self._cancel_source is None:
+                    self._cancel_source = {
+                        "client_id": requested_by,
+                        "cause": cause,
+                    }
         if dictation is not None:
             with self._active_lock:
                 self._microphone_closing = True
@@ -2242,6 +2304,98 @@ class VoxEngine:
             "session": self.state.snapshot().to_dict(),
         }
 
+    @staticmethod
+    def _participant_id(agent: str | None, instance: str | None) -> str:
+        label = agent or DEFAULT_AGENT
+        if instance:
+            return f"{label}@{instance[:6]}"
+        return label
+
+    def _prune_participants(self, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        for pid in [
+            pid
+            for pid, info in self._participants.items()
+            if current - float(info.get("last_active", 0)) > _PARTICIPANT_TTL_SECONDS
+        ]:
+            del self._participants[pid]
+
+    def _touch_participants(self, agent: str | None) -> None:
+        """Any audio turn by an agent keeps its roster entries alive.
+
+        Audio ops do not carry the connection tag, so this refreshes by label —
+        coarse, but the alternative is a live conversation expiring mid-word.
+        """
+
+        label = agent or DEFAULT_AGENT
+        now = time.time()
+        for info in self._participants.values():
+            if info.get("agent") == label:
+                info["last_active"] = now
+
+    def _join_line(self, agent: str | None, instance: str | None) -> dict[str, Any]:
+        now = time.time()
+        self._prune_participants(now)
+        pid = self._participant_id(agent, instance)
+        mine = self._participants.get(pid)
+        if mine is None:
+            mine = {
+                "participant": pid,
+                "agent": agent or DEFAULT_AGENT,
+                "session_id": uuid.uuid4().hex[:12],
+                "joined_at": now,
+            }
+            self._participants[pid] = mine
+        mine["last_active"] = now
+        others = sorted(p for p in self._participants if p != pid)
+        joined: dict[str, Any] = {
+            "my_session": {
+                key: mine[key] for key in ("participant", "agent", "session_id")
+            },
+            "others_on_line": others,
+        }
+        if others:
+            joined["line_note"] = (
+                "you have your own session on a shared voice line; also on it: "
+                f"{', '.join(others)}. Audio queues FIFO across everyone, and "
+                "your stop ends only your session."
+            )
+        return joined
+
+    def _leave_line(self, agent: str | None, instance: str | None) -> dict[str, Any] | None:
+        """Drop this agent's roster entry; by label alone when untagged.
+
+        A stop can arrive without the connection tag its start carried (the
+        voice_control path), so an untagged leave takes every entry for the
+        label rather than stranding a phantom that keeps the line open.
+        """
+
+        self._prune_participants()
+        pid = self._participant_id(agent, instance)
+        left = self._participants.pop(pid, None)
+        if left is None and not instance:
+            label = agent or DEFAULT_AGENT
+            for key in [
+                key
+                for key, info in self._participants.items()
+                if info.get("agent") == label
+            ]:
+                left = self._participants.pop(key)
+        return left
+
+    def _participants_public(self) -> list[dict[str, Any]]:
+        now = time.time()
+        return [
+            {
+                "participant": info["participant"],
+                "agent": info["agent"],
+                "session_id": info["session_id"],
+                "joined_s_ago": round(now - float(info["joined_at"]), 1),
+                "active_s_ago": round(now - float(info["last_active"]), 1),
+            }
+            for _, info in sorted(self._participants.items())
+        ]
+
     async def session(
         self,
         client_id: str,
@@ -2252,6 +2406,7 @@ class VoxEngine:
         force: bool = False,
         agent: str | None = None,
         mode: str | None = None,
+        instance: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         del kwargs
@@ -2312,10 +2467,25 @@ class VoxEngine:
                     self.state.start(client_id=None)
             else:
                 await self._claim(client_id)
+                joined = self._join_line(agent, instance)
+                self._log(
+                    "session.start",
+                    client_id=client_id,
+                    agent=agent or DEFAULT_AGENT,
+                    participant=joined["my_session"]["participant"],
+                )
+                payload = await self._status_for_agent(agent)
+                payload.update(joined)
+                return payload
         elif action in {"pause", "mute"}:
             if not administrative and not force:
                 await self._claim(client_id)
-            self._signal_cancel(manual_end=False, force=True)
+            self._signal_cancel(
+                manual_end=False,
+                force=True,
+                requested_by=client_id,
+                cause=f"voice_session {action}",
+            )
             # A turn that queued before the pause would otherwise inherit the
             # mic afterwards and speak straight through a privacy hold.
             self.gate.drain("paused")
@@ -2335,15 +2505,67 @@ class VoxEngine:
                 await self._claim(client_id, start=False)
             self.state.resume(client_id=None)
         elif action == "stop":
-            self._signal_cancel(manual_end=False, force=True)
+            user_surface = administrative or client_id in _USER_SURFACES
+            if not user_surface and not force:
+                left = self._leave_line(agent, instance)
+                if self._participants:
+                    # Other agents still have their sessions on the line, and
+                    # their audio must not so much as flicker: leaving is pure
+                    # bookkeeping, no cancel, no drain, no state change.
+                    remaining = ", ".join(sorted(self._participants))
+                    self._log(
+                        "session.leave",
+                        client_id=client_id,
+                        agent=agent or DEFAULT_AGENT,
+                        remaining=len(self._participants),
+                    )
+                    payload = await self._status_for_agent(agent)
+                    payload["status"] = "left"
+                    payload["left_session"] = (left or {}).get("session_id")
+                    payload["line_note"] = (
+                        "your session ended; the shared voice line stays open "
+                        f"for: {remaining}"
+                    )
+                    return payload
+                # The session is shared: an agent's stop tears it down for
+                # every connected agent. One agent once "cleared a stuck mic"
+                # this way and cut a peer off mid-converse — and the peer was
+                # told the user hung up. A busy line is never a reason to
+                # stop; user surfaces (hotkey, phone) still stop instantly.
+                gate = await self.gate.status()
+                if gate.get("busy"):
+                    raise BusyError(
+                        "a voice turn is in flight "
+                        f"({gate.get('action')} for {gate.get('client_id')}, "
+                        f"agent '{gate.get('agent')}'); stopping the shared "
+                        "session would cut every connected agent off "
+                        "mid-word. If the user explicitly asked to end "
+                        "voice, retry with force=true — otherwise wait for "
+                        "the turn to finish."
+                    )
+            self._signal_cancel(
+                manual_end=False,
+                force=True,
+                requested_by=client_id,
+                cause="voice_session stop",
+            )
             self.gate.drain("stopped")
             if not await self._wait_for_microphone_closed():
                 raise ServiceUnavailableError("microphone is still closing; Vox remains fail-closed")
             await self._close_source()
             if self.state.state is not SessionState.OFF:
-                self.state.stop(StopReason.USER_REQUEST, client_id=None)
+                # Attribute honestly: only the user's own surfaces may claim
+                # USER_REQUEST. A programmatic stop is AGENT_REQUEST, so a
+                # peer whose turn died can see the user never hung up.
+                self.state.stop(
+                    StopReason.USER_REQUEST
+                    if user_surface
+                    else StopReason.AGENT_REQUEST,
+                    client_id=None,
+                )
             # Stop is a global privacy/safety control. Anyone on the local MCP
             # surface may close the microphone and release stale ownership.
+            self._participants.clear()
             await self.lease.release(client_id, force=True)
         elif action == "handoff":
             # Shared session: no exclusive ownership to transfer. Optionally
@@ -2367,7 +2589,12 @@ class VoxEngine:
             # mic and drain the queue so this client can speak next — not
             # steal exclusive ownership (there is none).
             del force
-            self._signal_cancel(manual_end=False, force=True)
+            self._signal_cancel(
+                manual_end=False,
+                force=True,
+                requested_by=client_id,
+                cause="voice_session takeover",
+            )
             self.gate.drain("takeover")
             if not await self._wait_for_microphone_closed():
                 raise ServiceUnavailableError(
@@ -2401,11 +2628,18 @@ class VoxEngine:
     ) -> dict[str, Any]:
         action = action.lower().strip()
         if action in {"cancel", "skip_forward", "stop_audio"}:
-            signal = self._signal_cancel(manual_end=False)
+            signal = self._signal_cancel(
+                manual_end=False, requested_by=client_id, cause="voice_control cancel"
+            )
             # Cancelling only the active turn would leave the queue behind it
             # waiting to speak, so the mic frees up and then talks anyway.
             drained = self.gate.drain("cancelled")
-            return {"status": "cancel_signalled", "queue_drained": drained, **signal}
+            result = {"status": "cancel_signalled", "queue_drained": drained, **signal}
+            if not signal.get("signalled") and drained == 0:
+                # An agent that reads this as "cancelled something" escalates
+                # to stopping the whole shared session next. Say it plainly.
+                result["note"] = "no turn was active; nothing was cancelled"
+            return result
         if action in {"manual_end", "push_to_talk_end"}:
             signal = self._signal_cancel(manual_end=True, cancel_task=False)
             return {"status": "manual_end_signalled", **signal}
@@ -2842,6 +3076,9 @@ class VoxEngine:
             "state": self.state.state.value,
             "detail": detail,
             "session": session,
+            # Everyone with their own session on the shared line, so any agent
+            # (and the HUD) can see who a busy microphone belongs to.
+            "participants": self._participants_public(),
             "lease": await self.lease.status(),
             "operation": await self.gate.status(),
             "storage": self.store.status(),

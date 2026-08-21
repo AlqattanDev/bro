@@ -40,6 +40,10 @@ class StopReason(str, Enum):
     """Why a session entered :attr:`SessionState.OFF`."""
 
     USER_REQUEST = "user_request"
+    # An MCP-connected agent stopped the shared session programmatically. Kept
+    # distinct from USER_REQUEST so a peer whose turn died can see the user
+    # never hung up.
+    AGENT_REQUEST = "agent_request"
     IDLE_TIMEOUT = "idle_timeout"
     OWNER_DISCONNECTED = "owner_disconnected"
     SHUTDOWN = "shutdown"

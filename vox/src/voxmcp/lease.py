@@ -301,7 +301,11 @@ class OperationGate:
         waiter.future.set_exception(
             BusyError(
                 f"{waiter.action} waited {waited:.1f}s for the microphone but "
-                f"{self._busy_message()}; giving up after {timeout:g}s"
+                f"{self._busy_message()}; giving up after {timeout:g}s. The "
+                "voice line is shared and hosts can share one client id, so "
+                "this may be ANOTHER agent's conversation, not a stuck turn "
+                "of yours — wait and retry; do not cancel or stop the session "
+                "to clear it"
             )
         )
         self._emit("queue.timeout", waiter, waited_s=round(waited, 3))
@@ -330,7 +334,10 @@ class OperationGate:
         active = self._active
         if active is None:
             return "audio is already running"
-        return f"{active.action or 'audio'} is already running for {active.client_id}"
+        return (
+            f"{active.action or 'audio'} is already running for "
+            f"{active.client_id} (agent '{active.agent}')"
+        )
 
     def _emit(self, event: str, waiter: _Waiter, **data: Any) -> None:
         callback = self.on_event

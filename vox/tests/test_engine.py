@@ -603,7 +603,9 @@ async def test_session_stop_drains_queued_turns(tmp_path: Path):
     await asyncio.sleep(0.05)
     assert (await engine.status())["operation"]["queue_depth"] == 1
 
-    await engine.session("claude", "stop")
+    # Mid-turn agent stop needs force; the un-forced path is refused (see
+    # test_agent_stop_is_refused_while_a_turn_is_in_flight).
+    await engine.session("claude", "stop", force=True)
 
     with pytest.raises(BusyError):
         await asyncio.wait_for(queued, timeout=2)
@@ -613,6 +615,141 @@ async def test_session_stop_drains_queued_turns(tmp_path: Path):
     status = await engine.status()
     assert status["operation"]["queue_depth"] == 0
     assert status["operation"]["busy"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_stop_is_refused_while_a_turn_is_in_flight(tmp_path: Path):
+    """One agent's 'stuck mic' is another agent's live conversation.
+
+    The incident: two hosts shared the line, one saw a BusyError, decided its
+    own mic was stuck, and stopped the shared session — cutting the peer off
+    mid-converse. An un-forced agent stop while the gate is busy is refused.
+    """
+
+    engine = make_engine(tmp_path)
+    holder, handle = await _hold_the_microphone(engine)
+
+    with pytest.raises(BusyError, match="cut every connected agent off"):
+        await engine.session("codex", "stop")
+    # The refusal changed nothing: the turn is still running.
+    assert (await engine.status())["operation"]["busy"] is True
+
+    handle.release.set()
+    result = await asyncio.wait_for(holder, timeout=5)
+    assert result["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_peer_stop_names_itself_in_the_victims_cancelled_turn(tmp_path: Path):
+    """The agent whose turn dies must see 'a peer stopped it', not 'the user hung up'."""
+
+    engine = make_engine(tmp_path)
+    holder, handle = await _hold_the_microphone(engine)
+
+    stopped = await engine.session("codex", "stop", force=True)
+    assert stopped["state"] == "off"
+    assert stopped["session"]["last_stop_reason"] == "agent_request"
+
+    handle.release.set()
+    result = await asyncio.wait_for(holder, timeout=5)
+    assert result["status"] == "cancelled"
+    assert result["cancelled_by"] == {
+        "client_id": "codex",
+        "cause": "voice_session stop",
+    }
+    assert "not the user hanging up" in result["detail"]
+    assert result["session"]["last_stop_reason"] == "agent_request"
+
+
+@pytest.mark.asyncio
+async def test_user_surface_stop_needs_no_force_and_reads_user_request(tmp_path: Path):
+    engine = make_engine(tmp_path)
+    holder, handle = await _hold_the_microphone(engine)
+
+    stopped = await engine.session("http-control", "stop")
+    assert stopped["state"] == "off"
+    assert stopped["session"]["last_stop_reason"] == "user_request"
+
+    handle.release.set()
+    result = await asyncio.wait_for(holder, timeout=5)
+    assert result["status"] == "cancelled"
+    assert result["cancelled_by"]["client_id"] == "http-control"
+    assert "the user cancelled" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_each_agent_gets_its_own_session_on_the_shared_line(tmp_path: Path):
+    engine = make_engine(tmp_path)
+
+    first = await engine.session("claude", "start", agent="bankabc", instance="a1b2c3d4")
+    second = await engine.session(
+        "claude", "start", agent="mobilescape", instance="e5f6a7b8"
+    )
+
+    assert first["my_session"]["participant"] == "bankabc@a1b2c3"
+    assert second["my_session"]["participant"] == "mobilescape@e5f6a7"
+    assert first["my_session"]["session_id"] != second["my_session"]["session_id"]
+    assert second["others_on_line"] == ["bankabc@a1b2c3"]
+    assert "your stop ends only your session" in second["line_note"]
+    assert [p["agent"] for p in second["participants"]] == ["bankabc", "mobilescape"]
+
+
+@pytest.mark.asyncio
+async def test_two_anonymous_connections_still_get_separate_sessions(tmp_path: Path):
+    """Same host name, same default agent — the connection tag tells them apart."""
+
+    engine = make_engine(tmp_path)
+
+    one = await engine.session("mcp:host:claude-code", "start", instance="a1b2c3d4")
+    two = await engine.session("mcp:host:claude-code", "start", instance="e5f6a7b8")
+
+    assert one["my_session"]["participant"] == "default@a1b2c3"
+    assert two["my_session"]["participant"] == "default@e5f6a7"
+    assert one["my_session"]["session_id"] != two["my_session"]["session_id"]
+
+
+@pytest.mark.asyncio
+async def test_stop_ends_only_your_session_while_others_are_on_the_line(tmp_path: Path):
+    engine = make_engine(tmp_path)
+    await engine.session("claude", "start", agent="bankabc", instance="a1b2c3d4")
+    await engine.session("claude", "start", agent="mobilescape", instance="e5f6a7b8")
+
+    left = await engine.session(
+        "claude", "stop", agent="mobilescape", instance="e5f6a7b8"
+    )
+    assert left["status"] == "left"
+    assert left["state"] != "off"
+    assert "stays open" in left["line_note"]
+    assert [p["agent"] for p in left["participants"]] == ["bankabc"]
+
+    # The last one out closes the physical line.
+    stopped = await engine.session("claude", "stop", agent="bankabc", instance="a1b2c3d4")
+    assert stopped["state"] == "off"
+    assert stopped["participants"] == []
+
+
+@pytest.mark.asyncio
+async def test_user_stop_clears_the_whole_roster(tmp_path: Path):
+    engine = make_engine(tmp_path)
+    await engine.session("claude", "start", agent="bankabc", instance="a1b2c3d4")
+    await engine.session("claude", "start", agent="mobilescape", instance="e5f6a7b8")
+
+    stopped = await engine.session("http-control", "stop")
+
+    assert stopped["state"] == "off"
+    assert stopped["participants"] == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_with_nothing_active_says_so(tmp_path: Path):
+    """A no-op cancel must not read as 'cancelled something', or the caller
+    escalates to stopping the shared session next."""
+
+    engine = make_engine(tmp_path)
+    result = await engine.control("claude", "cancel")
+    assert result["signalled"] is False
+    assert result["queue_drained"] == 0
+    assert result["note"] == "no turn was active; nothing was cancelled"
 
 
 class TextAwaitingRecorder:

@@ -220,6 +220,35 @@ async def test_url_agent_param_separates_speakers_sharing_one_client_id(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_each_connection_carries_its_own_instance_tag(tmp_path: Path) -> None:
+    """Two same-named hosts share a client id but never an instance tag,
+    which is what gives each of them its own session on the shared line."""
+
+    engine = FakeEngine(tmp_path / "latest.wav")
+    server = create_mcp(engine)
+    app = server.http_app(path=DEFAULT_MCP_PATH, stateless_http=False)
+    factory = _asgi_client_factory(app)
+
+    async with app.router.lifespan_context(app):
+        for _ in range(2):
+            transport = StreamableHttpTransport(
+                url=f"http://127.0.0.1{DEFAULT_MCP_PATH}",
+                httpx_client_factory=factory,
+            )
+            async with Client(
+                transport,
+                client_info=Implementation(name="Claude Code", version="1.0"),
+            ) as client:
+                await client.call_tool("voice_session", {"action": "start"})
+
+    starts = [arguments for name, arguments in engine.calls if name == "session"]
+    assert len(starts) == 2
+    assert starts[0]["client_id"] == starts[1]["client_id"]
+    assert all(arguments.get("instance") for arguments in starts)
+    assert starts[0]["instance"] != starts[1]["instance"]
+
+
+@pytest.mark.asyncio
 async def test_url_agent_param_is_normalised(tmp_path: Path) -> None:
     engine = FakeEngine(tmp_path / "latest.wav")
     server = create_mcp(engine)
@@ -291,7 +320,10 @@ async def test_tool_arguments_are_adapted_to_engine_contract(tmp_path: Path) -> 
     calls = {name: arguments for name, arguments in engine.calls}
     owner = calls["session"]["client_id"]
     assert owner.startswith("mcp:")
-    assert calls["session"] == {
+    session_call = dict(calls["session"])
+    # The per-connection tag is dynamic; the roster only needs it non-empty.
+    assert session_call.pop("instance")
+    assert session_call == {
         "action": "pause",
         "client_id": owner,
         "agent": "default",

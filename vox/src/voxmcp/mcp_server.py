@@ -78,6 +78,22 @@ def _client_id(ctx: Context) -> str:
     return f"mcp:{ctx.session_id}"
 
 
+def _instance(ctx: Context) -> str | None:
+    """Per-connection tag for the participant roster.
+
+    The transport session id is the one identity two same-named hosts do not
+    share, so it is what keeps their line sessions apart. Never used for
+    leases — those deliberately follow the stable host name.
+    """
+
+    try:
+        session_id = ctx.session_id
+    except Exception:
+        return None
+    value = str(session_id).strip() if session_id else ""
+    return value or None
+
+
 def _normalize_agent(value: Any) -> str | None:
     """Reduce a speaker label to the safe alphabet, or None if nothing is left."""
 
@@ -274,6 +290,15 @@ def create_mcp(engine: Any | None = None, *, control_token: str | None = None) -
             "Vox is local-only voice I/O. Start an explicit voice session before "
             "listening. The microphone is permitted only during listen/converse; "
             "cancel ends the current turn, while stop ends the session.\n"
+            "The audio line is SHARED but each agent gets its own session on it: "
+            "voice_session start returns your my_session and a participants "
+            "roster of who else is live. A busy microphone usually means "
+            "another agent is mid-conversation — wait and retry; never cancel "
+            "or stop to clear a busy line. Your stop ends only your session "
+            "(the line closes when the last agent leaves). A result with "
+            "status 'cancelled' names who ended the turn in "
+            "cancelled_by/detail — unless it says the user did, do not "
+            "conclude the user ended voice.\n"
             "Voice turn contract: a spoken turn is a conversation, not a report. "
             "Talk normally, in complete thoughts. Do not call other "
             "tools between conversation turns — the user is sitting in silence "
@@ -517,10 +542,15 @@ def create_mcp(engine: Any | None = None, *, control_token: str | None = None) -
     @server.tool(
         name="voice_session",
         description=(
-            "Shared voice session controls: start/stop/pause, status, io mode "
-            "(talk|narrate|dictate), claim undelivered transcript. Session is "
-            "shared — no exclusive owner; audio queues FIFO. handoff/takeover "
-            "are legacy no-ops."
+            "Voice session controls: start/stop/pause, status, io mode "
+            "(talk|narrate|dictate), claim undelivered transcript. start gives "
+            "THIS agent its own session on the shared audio line (see "
+            "my_session and the participants roster in results); audio queues "
+            "FIFO across everyone. stop ends only your session while others "
+            "are on the line; when you are the last one it closes the line, "
+            "and mid-turn closure is refused unless force=true. Never stop to "
+            "clear a busy microphone — that is another agent's turn, wait "
+            "instead. handoff/takeover are legacy no-ops."
         ),
         annotations=LOCAL_ACTION,
     )
@@ -553,6 +583,7 @@ def create_mcp(engine: Any | None = None, *, control_token: str | None = None) -
             action=mapped_action,
             client_id=_client_id(ctx),
             agent=_agent_id(ctx, agent),
+            instance=_instance(ctx),
             pause_seconds=seconds,
             target_client_id=target,
             force=force,
@@ -807,7 +838,11 @@ def create_mcp(engine: Any | None = None, *, control_token: str | None = None) -
             "Use converse for normal turns and speak for narration that must not open the mic. "
             "The microphone listens only during listen/converse. Treat cancel as current-turn "
             "cancellation, not session shutdown. Use pause or wait when the user needs time, "
-            "and voice_session(action='stop') only for an explicit stop or session end. Keep a "
+            "and voice_session(action='stop') only for an explicit stop or session end. The "
+            "session is shared with other agents on this machine: a busy microphone is usually "
+            "another agent mid-conversation, so wait and retry rather than cancelling or "
+            "stopping, and read cancelled_by/detail on a cancelled result before deciding the "
+            "user ended voice. Keep a "
             "visible verbatim transcript unless the user opts out.\n"
             "\n"
             "Voice turn contract. The microphone and the speaker are fast; the pause between "
